@@ -18,8 +18,7 @@
         "CS_API_PASSWORD": "your_cs_password",
         "CS_API_BASE_URL": "https://localhost:50443",
         "CS_API_VERIFY_TLS": "false",
-        "LOG_LEVEL": "INFO",
-        "FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER": "true"
+        "LOG_LEVEL": "INFO"
       }
     }
   }

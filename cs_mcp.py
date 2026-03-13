@@ -331,4 +331,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nShutdown complete")
     except Exception:
+        # Add handling for exception
+        import traceback
+        traceback.print_exc()
         exit(1)
