@@ -79,7 +79,6 @@ def show_environment_variables() -> None:
         "MCP_LOG_LEVEL": "Override uvicorn log level for HTTP transport",
         
         # Advanced
-        "FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER": "Enable experimental OpenAPI parser (default: true)",
         "LOG_LEVEL": "Application log level (default: INFO)",
     }
     
@@ -223,19 +222,7 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("MCP_LOG_LEVEL"),
         help="Override uvicorn log level for HTTP transport",
     )
-    advanced_group.add_argument(
-        "--experimental-openapi-parser",
-        dest="experimental_parser",
-        action="store_true",
-        default=env_bool("FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER", True),
-        help="Enable FastMCP's experimental OpenAPI parser (default: enabled)",
-    )
-    advanced_group.add_argument(
-        "--no-experimental-openapi-parser",
-        dest="experimental_parser",
-        action="store_false",
-        help="Disable the experimental OpenAPI parser",
-    )
+
 
     args = parser.parse_args()
 
@@ -277,7 +264,6 @@ async def main() -> None:
         "username": args.username,
         "transport": args.transport,
         "listen_address": f"{args.listen_host}:{args.listen_port}{args.listen_path}",
-        "experimental_parser": args.experimental_parser,
     })
 
     # Create the Cobalt Strike client
@@ -301,7 +287,6 @@ async def main() -> None:
             cs_client=cs_client,
             server_name=args.server_name,
             instructions=args.instructions,
-            enable_experimental_parser=args.experimental_parser,
         )
 
         # Create the server from the OpenAPI spec
