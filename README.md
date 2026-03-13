@@ -150,8 +150,7 @@ The following parameters can be used while starting the MCP Server:
 
 ##### Advanced
 - `--log-level`: Override uvicorn log level for HTTP transport
-- `--experimental-openapi-parser`: Enable FastMCP's experimental OpenAPI parser (default: enabled)
-- `--no-experimental-openapi-parser`: Disable the experimental OpenAPI parser
+
 
 ### Basic Usage
 

@@ -7,7 +7,7 @@ from typing import Any
 
 import fastmcp
 from fastmcp import FastMCP
-from fastmcp.server.openapi import RouteMap, MCPType
+from fastmcp.server.providers.openapi import RouteMap, MCPType
 
 from cs_client import CobaltStrikeClient
 from cs_prompts import add_cobalt_strike_prompts
@@ -24,7 +24,6 @@ class CobaltStrikeMCPServer:
         cs_client: CobaltStrikeClient,
         server_name: str = "Cobalt Strike API",
         instructions: str | None = None,
-        enable_experimental_parser: bool = True,
     ):
         """Initialize the MCP server.
         
@@ -32,12 +31,10 @@ class CobaltStrikeMCPServer:
             cs_client: Authenticated Cobalt Strike client
             server_name: Name to display for the MCP server
             instructions: Optional instructions for MCP clients
-            enable_experimental_parser: Whether to use FastMCP's experimental OpenAPI parser
         """
         self.cs_client = cs_client
         self.server_name = server_name
         self.instructions = instructions
-        self.enable_experimental_parser = enable_experimental_parser
         self._mcp_server: FastMCP | None = None
 
     async def create_server(self, spec_url: str = "/v3/api-docs") -> FastMCP:
@@ -49,9 +46,6 @@ class CobaltStrikeMCPServer:
         Returns:
             Configured FastMCP server instance
         """
-        if self.enable_experimental_parser:
-            fastmcp.settings.experimental.enable_new_openapi_parser = True
-            logger.info("Enabled FastMCP experimental OpenAPI parser")
 
         # Fetch the OpenAPI specification
         logger.info("Fetching OpenAPI specification from %s", spec_url)
