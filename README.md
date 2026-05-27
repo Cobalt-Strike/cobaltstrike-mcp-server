@@ -15,7 +15,8 @@ This MCP server provides a bridge between large language models like Claude and 
 
 ### Prerequisites
 
-- **Python 3.8+** installed
+- **Python 3.10+** installed
+- **uv** installed for dependency management
 - FastMCP 2.12.5 or higher 
 - The Cobalt Strike API Server should be running.
 - Cobalt Strike should be installed and configured.
@@ -30,7 +31,19 @@ This MCP server provides a bridge between large language models like Claude and 
     cd cobaltstrike-mcp-server
     ```
 
-2. **Create and activate a virtual environment**
+2. **Create the uv-managed environment**
+
+    ```powershell
+    uv sync
+    ```
+
+3. **Verify Installation**
+
+    ```powershell
+    uv run python cs_mcp.py --help
+    ```
+
+#### Alternative: Manual virtual environment
 
 - **Windows**:
     ```cmd
@@ -44,23 +57,17 @@ This MCP server provides a bridge between large language models like Claude and 
     source venv/bin/activate
     ```
 
-3. **Install dependencies**
+Install dependencies:
 
     ```powershell
     pip install -r requirements.txt
     ```
 
-4. **Verify Installation**
+Verify installation:
 
     ```bash
     python cs_mcp.py --help
     ```
-
-#### Alternative: System-wide Installation
-
-```bash
-pip install -r requirements.txt
-```
 
 ### Configuration
 
@@ -81,6 +88,9 @@ export MCP_LISTEN_HOST="127.0.0.1"
 export MCP_LISTEN_PORT="3000"
 export MCP_TRANSPORT="http"
 export MCP_SERVER_NAME="Cobalt Strike MCP"
+
+# WebSocket stream-backed console output
+export CS_WS_AUTO_START="true"
 
 # Logging
 export LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR
@@ -150,19 +160,17 @@ The following parameters can be used while starting the MCP Server:
 
 ##### Advanced
 - `--log-level`: Override uvicorn log level for HTTP transport
-- `--experimental-openapi-parser`: Enable FastMCP's experimental OpenAPI parser (default: enabled)
-- `--no-experimental-openapi-parser`: Disable the experimental OpenAPI parser
+- `--websocket-auto-start` / `--no-websocket-auto-start`: Start beacons/eventlog stream subscriptions at server startup
+- `--websocket-buffer-size`: Entries retained per stream buffer
+- `--websocket-reconnect-seconds`: Delay between reconnect attempts
 
 ### Basic Usage
 
 The MCP Server can be run standalone from the command line.
 
 ```bash
-# Activate virtual environment first
-source venv/bin/activate  # or venv\Scripts\activate on Windows
-
 # Start the MCP server with command line arguments
-python cs_mcp.py --username your_username --password your_password --insecure
+uv run python cs_mcp.py --username your_username --password your_password --insecure
 ```
 
 #### Using Environment Variables
@@ -174,7 +182,7 @@ export CS_API_PASSWORD="CobaltStrikePassword"
 export CS_API_VERIFY_TLS="false"
 
 # Run with minimal command line arguments
-python cs_mcp.py
+uv run python cs_mcp.py
 ```
 
 #### Using .env File
@@ -185,7 +193,7 @@ cp .env.example .env
 # Edit .env with your credentials
 
 # Run
-python cs_mcp.py --transport stdio
+uv run python cs_mcp.py --transport stdio
 ```
 ## Available Tools
 
@@ -203,6 +211,23 @@ The MCP server automatically exposes all [Cobalt Strike REST API endpoints](http
 - `executeUpload`: Upload files to target systems
 - `executeDownload`: Download files from target systems
 - [...]
+
+### WebSocket Stream Tools
+- `startCobaltStrikeWebsocketStreams`: Start default `/subscribe/beacons` and `/subscribe/eventlog` stream subscriptions
+- `getCobaltStrikeWebsocketStatus`: Inspect stream connection status and buffer state
+- `getBeaconConsoleTail`: Subscribe to `/subscribe/beaconlog/{bid}` and return recent streamed console output
+- `getRecentEventLogTail`: Return recent streamed event log output
+- `getLiveBeaconSnapshot`: Return the latest streamed beacons snapshot
+- `executeBeaconConsoleAndWait`: Submit a beacon console command via REST and wait for streamed console output
+
+These tools use the REST API bearer token, connect to `wss://<CS_API_BASE_URL host>:<port>/connect`, and keep bounded in-memory buffers. `MCP_TRANSPORT=stdio` still only controls the MCP client/server transport; the WebSocket stream is a separate Cobalt Strike-side channel.
+
+`executeBeaconConsoleAndWait` polls the REST task status until terminal state and drains the WebSocket console stream after completion. For long-sleep beacons, the tool extends the effective wait timeout using beacon sleep/jitter metadata and includes a `wait_profile.notice` field so clients can tell the user not to expect an immediate response.
+
+### Downloaded File Tools
+- `getDownloadedFileText`: Fetch `/api/v1/data/downloads/{file_id}` and return bounded file text when the content appears textual. Binary files return metadata only.
+
+The file tool caps returned content to avoid flooding MCP context. It returns content type, content length, bytes read, truncation state, and a SHA-256 hash of the bytes read.
 
 ### Payloads
 - `generatePayload`: Generate various payload types
@@ -242,9 +267,13 @@ The server exposes static Cobalt Strike data through [MCP resources](https://git
         "mcpServers": {
         "Cobalt Strike MCP": {
             "name": "Cobalt Strike MCP",
-            "command": "<PROJECT LOCATION>/venv/Scripts/python.exe",
+            "command": "uv",
             "args": [
-                        "<PROJECT LOCATION>\\cs_mcp.py"
+                        "--directory",
+                        "<PROJECT LOCATION>",
+                        "run",
+                        "python",
+                        "cs_mcp.py"
                     ],
             "env": {
                         "CS_API_BASE_URL": "https://localhost:50443",

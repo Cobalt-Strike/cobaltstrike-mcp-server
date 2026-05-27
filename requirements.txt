@@ -1,10 +1,13 @@
 # Cobalt Strike MCP Server Dependencies
 
 # Core MCP and FastMCP framework
-fastmcp>=2.12.5
+fastmcp>=3.3.1,<4
 
 # HTTP client for Cobalt Strike API communication
 httpx>=0.25.0
+
+# WebSocket client for Cobalt Strike stream subscriptions
+websocket-client>=1.6.0
 
 # Type hints and runtime support
 typing-extensions>=4.7.0

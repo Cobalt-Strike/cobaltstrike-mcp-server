@@ -20,6 +20,9 @@ DEFAULT_LISTEN_HOST = "127.0.0.1"
 DEFAULT_LISTEN_PORT = 3000
 DEFAULT_LISTEN_PATH = "/mcp"
 DEFAULT_TRANSPORT = "http"
+DEFAULT_WS_AUTO_START = True
+DEFAULT_WS_BUFFER_SIZE = 1000
+DEFAULT_WS_RECONNECT_SECONDS = 2.0
 
 DEFAULT_SERVER_INSTRUCTIONS = """\
 You are a cybersecurity operations assistant interacting with a Cobalt Strike MCP (Model-Context-Protocol) server, which acts as an automation and integration layer over a live Cobalt Strike Team Server. The MCP server exposes a set of actions for managing and tasking beacons (compromised systems), automating common red team workflows, and retrieving results. You are responsible for orchestrating operations, querying beacon status, and triggering post-exploitation actions.
@@ -77,9 +80,13 @@ def show_environment_variables() -> None:
         "MCP_SERVER_NAME": "Name displayed to MCP clients (default: Cobalt Strike API)",
         "MCP_SERVER_INSTRUCTIONS": "Instructions for MCP clients",
         "MCP_LOG_LEVEL": "Override uvicorn log level for HTTP transport",
+
+        # Cobalt Strike WebSocket streams
+        "CS_WS_AUTO_START": "Start beacons/eventlog WebSocket subscriptions at server startup (default: true)",
+        "CS_WS_BUFFER_SIZE": f"Entries retained per WebSocket stream buffer (default: {DEFAULT_WS_BUFFER_SIZE})",
+        "CS_WS_RECONNECT_SECONDS": f"Seconds between WebSocket reconnect attempts (default: {DEFAULT_WS_RECONNECT_SECONDS})",
         
         # Advanced
-        "FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER": "Enable experimental OpenAPI parser (default: true)",
         "LOG_LEVEL": "Application log level (default: INFO)",
     }
     
@@ -224,17 +231,29 @@ def parse_args() -> argparse.Namespace:
         help="Override uvicorn log level for HTTP transport",
     )
     advanced_group.add_argument(
-        "--experimental-openapi-parser",
-        dest="experimental_parser",
+        "--websocket-auto-start",
+        dest="websocket_auto_start",
         action="store_true",
-        default=env_bool("FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER", True),
-        help="Enable FastMCP's experimental OpenAPI parser (default: enabled)",
+        default=env_bool("CS_WS_AUTO_START", DEFAULT_WS_AUTO_START),
+        help="Start beacons/eventlog WebSocket subscriptions at server startup",
     )
     advanced_group.add_argument(
-        "--no-experimental-openapi-parser",
-        dest="experimental_parser",
+        "--no-websocket-auto-start",
+        dest="websocket_auto_start",
         action="store_false",
-        help="Disable the experimental OpenAPI parser",
+        help="Do not start WebSocket subscriptions until stream tools are called",
+    )
+    advanced_group.add_argument(
+        "--websocket-buffer-size",
+        type=int,
+        default=int(os.getenv("CS_WS_BUFFER_SIZE", DEFAULT_WS_BUFFER_SIZE)),
+        help="Entries retained per WebSocket stream buffer (default: %(default)s)",
+    )
+    advanced_group.add_argument(
+        "--websocket-reconnect-seconds",
+        type=float,
+        default=float(os.getenv("CS_WS_RECONNECT_SECONDS", DEFAULT_WS_RECONNECT_SECONDS)),
+        help="Seconds between WebSocket reconnect attempts (default: %(default)s)",
     )
 
     args = parser.parse_args()
@@ -255,6 +274,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--duration-ms must be a positive integer")
     if args.http_timeout <= 0:
         parser.error("--http-timeout must be positive")
+    if args.websocket_buffer_size <= 0:
+        parser.error("--websocket-buffer-size must be a positive integer")
+    if args.websocket_reconnect_seconds <= 0:
+        parser.error("--websocket-reconnect-seconds must be positive")
 
     return args
 
@@ -277,7 +300,7 @@ async def main() -> None:
         "username": args.username,
         "transport": args.transport,
         "listen_address": f"{args.listen_host}:{args.listen_port}{args.listen_path}",
-        "experimental_parser": args.experimental_parser,
+        "websocket_auto_start": args.websocket_auto_start,
     })
 
     # Create the Cobalt Strike client
@@ -301,7 +324,9 @@ async def main() -> None:
             cs_client=cs_client,
             server_name=args.server_name,
             instructions=args.instructions,
-            enable_experimental_parser=args.experimental_parser,
+            auto_start_websocket_streams=args.websocket_auto_start,
+            websocket_buffer_size=args.websocket_buffer_size,
+            websocket_reconnect_seconds=args.websocket_reconnect_seconds,
         )
 
         # Create the server from the OpenAPI spec
@@ -325,10 +350,15 @@ async def main() -> None:
             await mcp_server.stop()
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Console script entry point."""
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nShutdown complete")
     except Exception:
         exit(1)
+
+
+if __name__ == "__main__":
+    run()

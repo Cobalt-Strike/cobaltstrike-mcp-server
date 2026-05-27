@@ -90,6 +90,17 @@ class CobaltStrikeClient:
         logger.info("Successfully authenticated with Cobalt Strike API")
         return token
 
+    @property
+    def access_token(self) -> str:
+        """Return the current bearer token for non-HTTP clients.
+
+        Raises:
+            RuntimeError: If not authenticated (call authenticate() first)
+        """
+        if not self._token:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+        return self._token
+
     def get_authenticated_client(self) -> httpx.AsyncClient:
         """Get an authenticated HTTP client for API requests.
         

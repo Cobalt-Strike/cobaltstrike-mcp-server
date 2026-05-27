@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import fastmcp
 from fastmcp import FastMCP
-from fastmcp.server.openapi import RouteMap, MCPType
+from fastmcp.server.providers.openapi import RouteMap, MCPType
 
 from cs_client import CobaltStrikeClient
+from cs_files import add_cobalt_strike_file_tools
 from cs_prompts import add_cobalt_strike_prompts
 from cs_resources import add_cobalt_strike_resources
+from cs_streams import CobaltStrikeWebSocketStreamManager, add_cobalt_strike_stream_tools
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,9 @@ class CobaltStrikeMCPServer:
         cs_client: CobaltStrikeClient,
         server_name: str = "Cobalt Strike API",
         instructions: str | None = None,
-        enable_experimental_parser: bool = True,
+        auto_start_websocket_streams: bool = True,
+        websocket_buffer_size: int = 1000,
+        websocket_reconnect_seconds: float = 2.0,
     ):
         """Initialize the MCP server.
         
@@ -32,13 +35,20 @@ class CobaltStrikeMCPServer:
             cs_client: Authenticated Cobalt Strike client
             server_name: Name to display for the MCP server
             instructions: Optional instructions for MCP clients
-            enable_experimental_parser: Whether to use FastMCP's experimental OpenAPI parser
+            auto_start_websocket_streams: Whether to subscribe to beacons/eventlog at startup
+            websocket_buffer_size: Maximum entries retained per stream buffer
+            websocket_reconnect_seconds: Delay between WebSocket reconnect attempts
         """
         self.cs_client = cs_client
         self.server_name = server_name
         self.instructions = instructions
-        self.enable_experimental_parser = enable_experimental_parser
         self._mcp_server: FastMCP | None = None
+        self.stream_manager = CobaltStrikeWebSocketStreamManager(
+            cs_client,
+            auto_start=auto_start_websocket_streams,
+            buffer_size=websocket_buffer_size,
+            reconnect_seconds=websocket_reconnect_seconds,
+        )
 
     async def create_server(self, spec_url: str = "/v3/api-docs") -> FastMCP:
         """Create the FastMCP server from the Cobalt Strike OpenAPI specification.
@@ -49,10 +59,6 @@ class CobaltStrikeMCPServer:
         Returns:
             Configured FastMCP server instance
         """
-        if self.enable_experimental_parser:
-            fastmcp.settings.experimental.enable_new_openapi_parser = True
-            logger.info("Enabled FastMCP experimental OpenAPI parser")
-
         # Fetch the OpenAPI specification
         logger.info("Fetching OpenAPI specification from %s", spec_url)
         openapi_spec = await self.cs_client.fetch_openapi_spec(spec_url)
@@ -82,6 +88,11 @@ class CobaltStrikeMCPServer:
         # Add MCP prompts and resources from separate modules
         add_cobalt_strike_prompts(self._mcp_server)
         add_cobalt_strike_resources(self._mcp_server, self.cs_client)
+        add_cobalt_strike_stream_tools(self._mcp_server, self.stream_manager)
+        add_cobalt_strike_file_tools(self._mcp_server, self.cs_client)
+
+        if self.stream_manager.auto_start:
+            self.stream_manager.start_defaults()
 
         logger.info("Created FastMCP server with OpenAPI specification")
         return self._mcp_server
@@ -192,6 +203,7 @@ class CobaltStrikeMCPServer:
         if self._mcp_server:
             # FastMCP doesn't have an explicit stop method, but we can clean up our resources
             logger.info("Stopping MCP server")
+            self.stream_manager.stop_all()
             self._mcp_server = None
 
 
