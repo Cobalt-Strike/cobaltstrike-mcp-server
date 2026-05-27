@@ -4,13 +4,13 @@
       "command": "python",
       "args": [
         "cs_mcp.py",
-        "--username", "dev_user", 
-        "--password", "dev_password",
         "--insecure",
         "--log-level", "DEBUG"
       ],
       "cwd": "/home/user/cs-mcp",
       "env": {
+        "CS_API_USERNAME": "dev_user",
+        "CS_API_PASSWORD": "dev_password",
         "LOG_LEVEL": "DEBUG"
       }
     }

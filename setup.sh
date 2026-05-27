@@ -51,7 +51,9 @@ else
 fi
 echo ""
 echo "2. Start the server:"
-echo "   python cs_mcp.py --username YOUR_USER --password YOUR_PASS --insecure"
+echo "   export CS_API_USERNAME=YOUR_USER"
+echo "   export CS_API_PASSWORD=YOUR_PASS"
+echo "   python cs_mcp.py --insecure"
 echo ""
 echo "3. Or configure Claude Desktop using one of the example config files:"
 echo "   - claude_desktop_config_example.json (basic)"

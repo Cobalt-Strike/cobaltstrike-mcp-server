@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from fastmcp import FastMCP
 
-from cs_client import CobaltStrikeClient
+from cs_client import CobaltStrikeClient, mcp_error
 
 logger = logging.getLogger(__name__)
 
@@ -109,11 +109,9 @@ async def fetch_downloaded_file_text(
 
         return result
     except Exception as exc:  # pylint: disable=broad-except
-        return {
-            "file_id": normalized_file_id,
-            "endpoint": path,
-            "error": str(exc),
-        }
+        result = mcp_error("Failed to fetch downloaded file", endpoint=path, exception=str(exc))
+        result["file_id"] = normalized_file_id
+        return result
 
 
 def decode_text_payload(data: bytes, content_type: str = "") -> tuple[bool, str | None, str | None]:

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import logging
-from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.server.providers.openapi import RouteMap, MCPType
@@ -16,6 +17,17 @@ from cs_streams import CobaltStrikeWebSocketStreamManager, add_cobalt_strike_str
 
 logger = logging.getLogger(__name__)
 
+HTTP_TRANSPORTS = {"http", "streamable-http", "sse"}
+SUPPORTED_TRANSPORTS = HTTP_TRANSPORTS | {"stdio"}
+
+
+def build_route_maps() -> list[RouteMap]:
+    """Build the OpenAPI route policy for generated MCP tools."""
+    return [
+        RouteMap(tags={"Security"}, mcp_type=MCPType.EXCLUDE),
+        RouteMap(pattern=r"^/.*/config/resetData", mcp_type=MCPType.EXCLUDE),
+    ]
+
 
 class CobaltStrikeMCPServer:
     """MCP server that exposes Cobalt Strike REST API endpoints as MCP tools."""
@@ -25,6 +37,7 @@ class CobaltStrikeMCPServer:
         cs_client: CobaltStrikeClient,
         server_name: str = "Cobalt Strike API",
         instructions: str | None = None,
+        websocket_streams_enabled: bool = True,
         auto_start_websocket_streams: bool = True,
         websocket_buffer_size: int = 1000,
         websocket_reconnect_seconds: float = 2.0,
@@ -35,6 +48,7 @@ class CobaltStrikeMCPServer:
             cs_client: Authenticated Cobalt Strike client
             server_name: Name to display for the MCP server
             instructions: Optional instructions for MCP clients
+            websocket_streams_enabled: Whether WebSocket stream-backed tools can connect
             auto_start_websocket_streams: Whether to subscribe to beacons/eventlog at startup
             websocket_buffer_size: Maximum entries retained per stream buffer
             websocket_reconnect_seconds: Delay between WebSocket reconnect attempts
@@ -43,8 +57,10 @@ class CobaltStrikeMCPServer:
         self.server_name = server_name
         self.instructions = instructions
         self._mcp_server: FastMCP | None = None
+        self._websocket_auto_start_task: asyncio.Task | None = None
         self.stream_manager = CobaltStrikeWebSocketStreamManager(
             cs_client,
+            enabled=websocket_streams_enabled,
             auto_start=auto_start_websocket_streams,
             buffer_size=websocket_buffer_size,
             reconnect_seconds=websocket_reconnect_seconds,
@@ -73,10 +89,7 @@ class CobaltStrikeMCPServer:
             "client": http_client,
             "name": self.server_name,
             "tags": {"openapi", "cobalt-strike"},
-            "route_maps": [
-                RouteMap(tags={"Security"}, mcp_type=MCPType.EXCLUDE),
-                RouteMap(pattern=r"^/.*/config/resetData", mcp_type=MCPType.EXCLUDE),
-            ],
+            "route_maps": build_route_maps(),
         }
 
         self._mcp_server = FastMCP.from_openapi(**create_kwargs)
@@ -91,9 +104,6 @@ class CobaltStrikeMCPServer:
         add_cobalt_strike_stream_tools(self._mcp_server, self.stream_manager)
         add_cobalt_strike_file_tools(self._mcp_server, self.cs_client)
 
-        if self.stream_manager.auto_start:
-            self.stream_manager.start_defaults()
-
         logger.info("Created FastMCP server with OpenAPI specification")
         return self._mcp_server
 
@@ -104,6 +114,7 @@ class CobaltStrikeMCPServer:
         port: int = 3000,
         path: str = "/mcp",
         log_level: str | None = None,
+        allow_remote_bind: bool = False,
     ) -> None:
         """Run the MCP server.
         
@@ -113,6 +124,7 @@ class CobaltStrikeMCPServer:
             port: Port to bind the server to
             path: URL path for the MCP endpoint
             log_level: Log level for uvicorn (if using HTTP transport)
+            allow_remote_bind: Allow non-loopback HTTP/SSE binds when externally protected
         """
         if not self._mcp_server:
             raise RuntimeError("Server not created. Call create_server() first.")
@@ -131,109 +143,81 @@ class CobaltStrikeMCPServer:
         )
 
         try:
-            # Convert string transport to proper type for FastMCP
-            if transport == "stdio":
-                # stdio transport doesn't use host, port, or path
-                logger.info("Starting MCP server '%s' with stdio transport", self.server_name)
-                await self._mcp_server.run_async(transport="stdio")
-            else:
-                # HTTP-based transports use host, port, and path
-                logger.info(
-                    "Starting MCP server '%s' on %s://%s:%s%s",
-                    self.server_name,
-                    transport,
-                    host,
-                    port,
-                    normalized_path,
-                )
-                
-                if transport == "http":
-                    if log_level:
-                        await self._mcp_server.run_async(
-                            transport="http",
-                            host=host,
-                            port=port,
-                            path=normalized_path,
-                            log_level=log_level,
-                        )
-                    else:
-                        await self._mcp_server.run_async(
-                            transport="http",
-                            host=host,
-                            port=port,
-                            path=normalized_path,
-                        )
-                elif transport == "streamable-http":
-                    if log_level:
-                        await self._mcp_server.run_async(
-                            transport="streamable-http",
-                            host=host,
-                            port=port,
-                            path=normalized_path,
-                            log_level=log_level,
-                        )
-                    else:
-                        await self._mcp_server.run_async(
-                            transport="streamable-http",
-                            host=host,
-                            port=port,
-                            path=normalized_path,
-                        )
-                elif transport == "sse":
-                    await self._mcp_server.run_async(
-                        transport="sse",
-                        host=host,
-                        port=port,
-                        path=normalized_path,
-                    )
-                else:
-                    # Default to http
-                    await self._mcp_server.run_async(
-                        transport="http",
-                        host=host,
-                        port=port,
-                        path=normalized_path,
-                    )
+            run_kwargs = build_run_kwargs(
+                transport=transport,
+                host=host,
+                port=port,
+                path=normalized_path,
+                log_level=log_level,
+                allow_remote_bind=allow_remote_bind,
+            )
+            self._schedule_websocket_auto_start()
+            await self._mcp_server.run_async(**run_kwargs)
         except Exception as exc:
             logger.error("MCP server error: %s", exc)
             raise
 
     async def stop(self) -> None:
         """Stop the MCP server and clean up resources."""
+        if self._websocket_auto_start_task:
+            self._websocket_auto_start_task.cancel()
+            self._websocket_auto_start_task = None
         if self._mcp_server:
             # FastMCP doesn't have an explicit stop method, but we can clean up our resources
             logger.info("Stopping MCP server")
             self.stream_manager.stop_all()
             self._mcp_server = None
 
+    def _schedule_websocket_auto_start(self) -> None:
+        if not self.stream_manager.enabled or not self.stream_manager.auto_start or self._websocket_auto_start_task:
+            return
+        self._websocket_auto_start_task = asyncio.create_task(self._start_websocket_streams())
 
-def _normalize_path_parameter(param: Any, route_path: str) -> None:
-    """Ensure path parameters are required and have no blank defaults.
-    
-    This is a utility function that can be used to normalize OpenAPI path parameters
-    if needed. Currently not used but kept for potential future use.
-    
-    Args:
-        param: Parameter definition from OpenAPI spec
-        route_path: The route path this parameter belongs to
-    """
-    if not isinstance(param, dict):
-        return
+    async def _start_websocket_streams(self) -> None:
+        await asyncio.sleep(0)
+        logger.info("Starting configured Cobalt Strike WebSocket subscriptions")
+        self.stream_manager.start_defaults()
 
-    if param.get("in") != "path":
-        return
 
-    if not param.get("required", False):
-        logger.debug(
-            "Marking path parameter '%s' on %s as required.",
-            param.get("name", "<unknown>"),
-            route_path,
+def build_run_kwargs(
+    *,
+    transport: str,
+    host: str,
+    port: int,
+    path: str,
+    log_level: str | None = None,
+    allow_remote_bind: bool = False,
+) -> dict[str, object]:
+    """Build FastMCP run_async kwargs and enforce bind safety."""
+    if transport not in SUPPORTED_TRANSPORTS:
+        raise ValueError(f"Unsupported MCP transport: {transport}")
+
+    if transport == "stdio":
+        return {"transport": "stdio"}
+
+    if not allow_remote_bind and not is_loopback_bind_host(host):
+        raise ValueError(
+            "Refusing to bind MCP HTTP/SSE transport to non-loopback host "
+            f"{host!r}. Use --allow-remote-bind only when protected by external auth/TLS."
         )
-        param["required"] = True
 
-    if param.get("default") in ("", None):
-        param.pop("default", None)
+    kwargs: dict[str, object] = {
+        "transport": transport,
+        "host": host,
+        "port": port,
+        "path": path,
+    }
+    if log_level and transport in {"http", "streamable-http"}:
+        kwargs["log_level"] = log_level
+    return kwargs
 
-    schema = param.get("schema")
-    if isinstance(schema, dict) and schema.get("default") in ("", None):
-        schema.pop("default", None)
+
+def is_loopback_bind_host(host: str) -> bool:
+    """Return whether a bind host is loopback-only."""
+    normalized = (host or "").strip().lower().strip("[]")
+    if normalized in {"localhost", "localhost."}:
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False

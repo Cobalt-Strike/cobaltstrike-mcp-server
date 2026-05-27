@@ -12,6 +12,27 @@ USER_AGENT = "cs-mcp/1.0"
 logger = logging.getLogger(__name__)
 
 
+def mcp_error(
+    message: str,
+    *,
+    endpoint: str | None = None,
+    status_code: int | None = None,
+    exception: str | None = None,
+) -> dict[str, Any]:
+    """Build a consistent error envelope for MCP-facing helpers."""
+    result: dict[str, Any] = {
+        "ok": False,
+        "error": message,
+    }
+    if endpoint is not None:
+        result["endpoint"] = endpoint
+    if status_code is not None:
+        result["status_code"] = status_code
+    if exception is not None:
+        result["exception"] = exception
+    return result
+
+
 class CobaltStrikeClient:
     """Client for authenticating and communicating with the Cobalt Strike REST API."""
 
@@ -155,6 +176,57 @@ class CobaltStrikeClient:
             ) from exc
         except httpx.HTTPError as exc:
             raise RuntimeError(f"Failed to fetch OpenAPI spec: {exc}") from exc
+
+    async def request_json(self, method: str, path: str, **kwargs) -> dict[str, Any]:
+        """Make an authenticated request and return a normalized JSON result."""
+        try:
+            client = self.get_authenticated_client()
+            response = await client.request(method, path, **kwargs)
+            if response.status_code >= 400:
+                return mcp_error(
+                    f"HTTP {response.status_code}",
+                    endpoint=path,
+                    status_code=response.status_code,
+                    exception=response.text.strip() or None,
+                )
+            try:
+                data = response.json()
+            except ValueError as exc:
+                return mcp_error(
+                    "Response did not contain valid JSON",
+                    endpoint=path,
+                    status_code=response.status_code,
+                    exception=str(exc),
+                )
+            return {
+                "ok": True,
+                "endpoint": path,
+                "status_code": response.status_code,
+                "data": data,
+            }
+        except (httpx.HTTPError, RuntimeError) as exc:
+            return mcp_error("HTTP request failed", endpoint=path, exception=str(exc))
+
+    async def request_text(self, method: str, path: str, **kwargs) -> dict[str, Any]:
+        """Make an authenticated request and return a normalized text result."""
+        try:
+            client = self.get_authenticated_client()
+            response = await client.request(method, path, **kwargs)
+            if response.status_code >= 400:
+                return mcp_error(
+                    f"HTTP {response.status_code}",
+                    endpoint=path,
+                    status_code=response.status_code,
+                    exception=response.text.strip() or None,
+                )
+            return {
+                "ok": True,
+                "endpoint": path,
+                "status_code": response.status_code,
+                "text": response.text,
+            }
+        except (httpx.HTTPError, RuntimeError) as exc:
+            return mcp_error("HTTP request failed", endpoint=path, exception=str(exc))
 
     async def close(self) -> None:
         """Close the HTTP client and clean up resources."""

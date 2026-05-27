@@ -4,12 +4,12 @@
       "command": "C:/Users/YourUser/cs-mcp/venv/Scripts/python.exe",
       "args": [
         "cs_mcp.py",
-        "--username", "cs_user",
-        "--password", "cs_password", 
         "--insecure"
       ],
       "cwd": "C:/Users/YourUser/cs-mcp",
       "env": {
+        "CS_API_USERNAME": "cs_user",
+        "CS_API_PASSWORD": "cs_password",
         "CS_API_BASE_URL": "https://192.168.1.100:50443"
       }
     }

@@ -4,8 +4,6 @@
       "command": "python",
       "args": [
         "cs_mcp.py",
-        "--username", "your_cs_username",
-        "--password", "your_cs_password",
         "--insecure",
         "--listen-host", "127.0.0.1",
         "--listen-port", "3000",

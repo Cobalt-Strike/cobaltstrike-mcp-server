@@ -88,8 +88,10 @@ export MCP_LISTEN_HOST="127.0.0.1"
 export MCP_LISTEN_PORT="3000"
 export MCP_TRANSPORT="http"
 export MCP_SERVER_NAME="Cobalt Strike MCP"
+export MCP_ALLOW_REMOTE_BIND="false"
 
 # WebSocket stream-backed console output
+export CS_WS_ENABLED="true"
 export CS_WS_AUTO_START="true"
 
 # Logging
@@ -131,6 +133,7 @@ This displays:
 - All supported environment variables
 - Current values (SET/NOT SET)
 - Description and default values
+- Secret-like values such as passwords and tokens are redacted
 - No authentication required
 
 #### Command Line Arguments
@@ -160,6 +163,8 @@ The following parameters can be used while starting the MCP Server:
 
 ##### Advanced
 - `--log-level`: Override uvicorn log level for HTTP transport
+- `--allow-remote-bind`: Allow HTTP/SSE transports to bind non-loopback addresses when protected by external auth/TLS
+- `--enable-websocket-streams` / `--disable-websocket-streams`: Enable or disable Cobalt Strike WebSocket streams
 - `--websocket-auto-start` / `--no-websocket-auto-start`: Start beacons/eventlog stream subscriptions at server startup
 - `--websocket-buffer-size`: Entries retained per stream buffer
 - `--websocket-reconnect-seconds`: Delay between reconnect attempts
@@ -169,8 +174,10 @@ The following parameters can be used while starting the MCP Server:
 The MCP Server can be run standalone from the command line.
 
 ```bash
-# Start the MCP server with command line arguments
-uv run python cs_mcp.py --username your_username --password your_password --insecure
+# Start the MCP server with credentials from the environment
+export CS_API_USERNAME="your_username"
+export CS_API_PASSWORD="your_password"
+uv run python cs_mcp.py --insecure
 ```
 
 #### Using Environment Variables
@@ -223,6 +230,8 @@ The MCP server automatically exposes all [Cobalt Strike REST API endpoints](http
 These tools use the REST API bearer token, connect to `wss://<CS_API_BASE_URL host>:<port>/connect`, and keep bounded in-memory buffers. `MCP_TRANSPORT=stdio` still only controls the MCP client/server transport; the WebSocket stream is a separate Cobalt Strike-side channel.
 
 `executeBeaconConsoleAndWait` polls the REST task status until terminal state and drains the WebSocket console stream after completion. For long-sleep beacons, the tool extends the effective wait timeout using beacon sleep/jitter metadata and includes a `wait_profile.notice` field so clients can tell the user not to expect an immediate response.
+
+Set `CS_WS_ENABLED=false` or pass `--disable-websocket-streams` to run without WebSocket subscriptions. In that mode, `executeBeaconConsoleAndWait` still submits the beacon console command through REST and polls the task status, but streamed console output is unavailable and the response includes `output_source: "rest_task_poll"` with an empty `output` list.
 
 ### Downloaded File Tools
 - `getDownloadedFileText`: Fetch `/api/v1/data/downloads/{file_id}` and return bounded file text when the content appears textual. Binary files return metadata only.

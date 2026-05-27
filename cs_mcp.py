@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import os
+from typing import Callable
 
 from cs_client import CobaltStrikeClient
 from cs_server import CobaltStrikeMCPServer
@@ -20,9 +21,11 @@ DEFAULT_LISTEN_HOST = "127.0.0.1"
 DEFAULT_LISTEN_PORT = 3000
 DEFAULT_LISTEN_PATH = "/mcp"
 DEFAULT_TRANSPORT = "http"
+DEFAULT_WS_ENABLED = True
 DEFAULT_WS_AUTO_START = True
 DEFAULT_WS_BUFFER_SIZE = 1000
 DEFAULT_WS_RECONNECT_SECONDS = 2.0
+SENSITIVE_ENV_MARKERS = ("PASSWORD", "TOKEN", "KEY", "SECRET")
 
 DEFAULT_SERVER_INSTRUCTIONS = """\
 You are a cybersecurity operations assistant interacting with a Cobalt Strike MCP (Model-Context-Protocol) server, which acts as an automation and integration layer over a live Cobalt Strike Team Server. The MCP server exposes a set of actions for managing and tasking beacons (compromised systems), automating common red team workflows, and retrieving results. You are responsible for orchestrating operations, querying beacon status, and triggering post-exploitation actions.
@@ -46,17 +49,96 @@ def env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_int(name: str, default: int) -> int:
+    """Parse an integer value from environment variables."""
+    return _env_number(name, default, int, "integer")
+
+
+def env_float(name: str, default: float) -> float:
+    """Parse a float value from environment variables."""
+    return _env_number(name, default, float, "number")
+
+
+def _env_number(name: str, default, parser: Callable, value_type: str):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return parser(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a valid {value_type}") from exc
+
+
 def load_env_file(env_file: str = ".env") -> None:
     """Load environment variables from a .env file if it exists."""
     if os.path.exists(env_file):
-        with open(env_file, 'r') as f:
+        with open(env_file, "r", encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    # Only set if not already in environment
-                    if key.strip() not in os.environ:
-                        os.environ[key.strip()] = value.strip()
+                parsed = parse_env_line(line)
+                if parsed is None:
+                    continue
+                key, value = parsed
+                if key not in os.environ:
+                    os.environ[key] = value
+
+
+def parse_env_line(line: str) -> tuple[str, str] | None:
+    """Parse a simple .env assignment line."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if stripped.startswith("export "):
+        stripped = stripped[7:].lstrip()
+    if "=" not in stripped:
+        return None
+
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+
+    value = _strip_inline_comment(value.strip())
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return key, value
+
+
+def _strip_inline_comment(value: str) -> str:
+    in_single = False
+    in_double = False
+    escaped = False
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if char == "#" and not in_single and not in_double:
+            if index == 0 or value[index - 1].isspace():
+                return value[:index].rstrip()
+    return value
+
+
+def is_sensitive_env_var(name: str) -> bool:
+    """Return whether an environment variable name likely contains a secret."""
+    upper_name = name.upper()
+    return any(marker in upper_name for marker in SENSITIVE_ENV_MARKERS)
+
+
+def format_env_status(name: str, value: str | None) -> str:
+    """Format an environment value for display without leaking secrets."""
+    if value is None:
+        return "NOT SET"
+    if is_sensitive_env_var(name):
+        return f"SET: <redacted, {len(value)} chars>"
+    return f"SET: {value}"
 
 
 def show_environment_variables() -> None:
@@ -80,8 +162,10 @@ def show_environment_variables() -> None:
         "MCP_SERVER_NAME": "Name displayed to MCP clients (default: Cobalt Strike API)",
         "MCP_SERVER_INSTRUCTIONS": "Instructions for MCP clients",
         "MCP_LOG_LEVEL": "Override uvicorn log level for HTTP transport",
+        "MCP_ALLOW_REMOTE_BIND": "Allow non-loopback MCP HTTP/SSE binds when protected by external auth/TLS",
 
         # Cobalt Strike WebSocket streams
+        "CS_WS_ENABLED": "Enable Cobalt Strike WebSocket stream tools (default: true)",
         "CS_WS_AUTO_START": "Start beacons/eventlog WebSocket subscriptions at server startup (default: true)",
         "CS_WS_BUFFER_SIZE": f"Entries retained per WebSocket stream buffer (default: {DEFAULT_WS_BUFFER_SIZE})",
         "CS_WS_RECONNECT_SECONDS": f"Seconds between WebSocket reconnect attempts (default: {DEFAULT_WS_RECONNECT_SECONDS})",
@@ -93,8 +177,7 @@ def show_environment_variables() -> None:
     print("Supported Environment Variables:")
     print("=" * 50)
     for var, description in env_vars.items():
-        current_value = os.getenv(var)
-        status = f"SET: {current_value}" if current_value else "NOT SET"
+        status = format_env_status(var, os.getenv(var))
         print(f"{var:<40} | {status}")
         print(f"{'':40} | {description}")
         print("-" * 80)
@@ -116,6 +199,17 @@ def parse_args() -> argparse.Namespace:
         description="Run an MCP server that exposes the Cobalt Strike REST API.",
         prog="cs-mcp",
     )
+    try:
+        duration_default = env_int("CS_API_DURATION_MS", DEFAULT_DURATION_MS)
+        http_timeout_default = env_float("CS_API_HTTP_TIMEOUT", DEFAULT_HTTP_TIMEOUT)
+        listen_port_default = env_int("MCP_LISTEN_PORT", DEFAULT_LISTEN_PORT)
+        websocket_buffer_size_default = env_int("CS_WS_BUFFER_SIZE", DEFAULT_WS_BUFFER_SIZE)
+        websocket_reconnect_default = env_float(
+            "CS_WS_RECONNECT_SECONDS",
+            DEFAULT_WS_RECONNECT_SECONDS,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # Special options
     parser.add_argument(
@@ -159,7 +253,7 @@ def parse_args() -> argparse.Namespace:
     auth_group.add_argument(
         "--duration-ms",
         type=int,
-        default=int(os.getenv("CS_API_DURATION_MS", DEFAULT_DURATION_MS)),
+        default=duration_default,
         help="JWT session duration in milliseconds (default: %(default)s)",
     )
 
@@ -168,7 +262,7 @@ def parse_args() -> argparse.Namespace:
     http_group.add_argument(
         "--http-timeout",
         type=float,
-        default=float(os.getenv("CS_API_HTTP_TIMEOUT", DEFAULT_HTTP_TIMEOUT)),
+        default=http_timeout_default,
         help="HTTP request timeout in seconds (default: %(default)s)",
     )
     
@@ -204,7 +298,7 @@ def parse_args() -> argparse.Namespace:
     mcp_group.add_argument(
         "--listen-port",
         type=int,
-        default=int(os.getenv("MCP_LISTEN_PORT", DEFAULT_LISTEN_PORT)),
+        default=listen_port_default,
         help="Port to bind the server to (default: %(default)s)",
     )
     mcp_group.add_argument(
@@ -231,6 +325,30 @@ def parse_args() -> argparse.Namespace:
         help="Override uvicorn log level for HTTP transport",
     )
     advanced_group.add_argument(
+        "--allow-remote-bind",
+        action="store_true",
+        default=env_bool("MCP_ALLOW_REMOTE_BIND", False),
+        help=(
+            "Allow MCP HTTP/SSE transports to bind non-loopback addresses. "
+            "Use only behind external auth/TLS controls."
+        ),
+    )
+    ws_enabled_default = env_bool("CS_WS_ENABLED", DEFAULT_WS_ENABLED)
+    ws_enabled_group = advanced_group.add_mutually_exclusive_group()
+    ws_enabled_group.add_argument(
+        "--enable-websocket-streams",
+        dest="websocket_enabled",
+        action="store_true",
+        default=ws_enabled_default,
+        help="Enable Cobalt Strike WebSocket stream tools",
+    )
+    ws_enabled_group.add_argument(
+        "--disable-websocket-streams",
+        dest="websocket_enabled",
+        action="store_false",
+        help="Disable Cobalt Strike WebSocket streams and use REST-only command waiting",
+    )
+    advanced_group.add_argument(
         "--websocket-auto-start",
         dest="websocket_auto_start",
         action="store_true",
@@ -246,13 +364,13 @@ def parse_args() -> argparse.Namespace:
     advanced_group.add_argument(
         "--websocket-buffer-size",
         type=int,
-        default=int(os.getenv("CS_WS_BUFFER_SIZE", DEFAULT_WS_BUFFER_SIZE)),
+        default=websocket_buffer_size_default,
         help="Entries retained per WebSocket stream buffer (default: %(default)s)",
     )
     advanced_group.add_argument(
         "--websocket-reconnect-seconds",
         type=float,
-        default=float(os.getenv("CS_WS_RECONNECT_SECONDS", DEFAULT_WS_RECONNECT_SECONDS)),
+        default=websocket_reconnect_default,
         help="Seconds between WebSocket reconnect attempts (default: %(default)s)",
     )
 
@@ -300,6 +418,7 @@ async def main() -> None:
         "username": args.username,
         "transport": args.transport,
         "listen_address": f"{args.listen_host}:{args.listen_port}{args.listen_path}",
+        "websocket_enabled": args.websocket_enabled,
         "websocket_auto_start": args.websocket_auto_start,
     })
 
@@ -324,6 +443,7 @@ async def main() -> None:
             cs_client=cs_client,
             server_name=args.server_name,
             instructions=args.instructions,
+            websocket_streams_enabled=args.websocket_enabled,
             auto_start_websocket_streams=args.websocket_auto_start,
             websocket_buffer_size=args.websocket_buffer_size,
             websocket_reconnect_seconds=args.websocket_reconnect_seconds,
@@ -340,6 +460,7 @@ async def main() -> None:
                 port=args.listen_port,
                 path=args.listen_path,
                 log_level=args.log_level,
+                allow_remote_bind=args.allow_remote_bind,
             )
         except KeyboardInterrupt:
             logger.info("Received keyboard interrupt; shutting down")
