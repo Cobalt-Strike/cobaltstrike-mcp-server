@@ -89,6 +89,9 @@ export MCP_LISTEN_PORT="3000"
 export MCP_TRANSPORT="http"
 export MCP_SERVER_NAME="Cobalt Strike MCP"
 export MCP_ALLOW_REMOTE_BIND="false"
+export MCP_EXTERNAL_AUTH="false"
+export MCP_OPERATOR_ID="operator-name"
+export MCP_AUDIT_LOG_FILE="logs/audit.log"
 
 # WebSocket stream-backed console output
 export CS_WS_ENABLED="true"
@@ -164,6 +167,7 @@ The following parameters can be used while starting the MCP Server:
 ##### Advanced
 - `--log-level`: Override uvicorn log level for HTTP transport
 - `--allow-remote-bind`: Allow HTTP/SSE transports to bind non-loopback addresses when protected by external auth/TLS
+- `--external-auth`: Confirm non-loopback HTTP/SSE binds are protected by external auth
 - `--enable-websocket-streams` / `--disable-websocket-streams`: Enable or disable Cobalt Strike WebSocket streams
 - `--websocket-auto-start` / `--no-websocket-auto-start`: Start beacons/eventlog stream subscriptions at server startup
 - `--websocket-buffer-size`: Entries retained per stream buffer
@@ -232,6 +236,10 @@ These tools use the REST API bearer token, connect to `wss://<CS_API_BASE_URL ho
 `executeBeaconConsoleAndWait` polls the REST task status until terminal state and drains the WebSocket console stream after completion. For long-sleep beacons, the tool extends the effective wait timeout using beacon sleep/jitter metadata and includes a `wait_profile.notice` field so clients can tell the user not to expect an immediate response.
 
 Set `CS_WS_ENABLED=false` or pass `--disable-websocket-streams` to run without WebSocket subscriptions. In that mode, `executeBeaconConsoleAndWait` still submits the beacon console command through REST and polls the task status, but streamed console output is unavailable and the response includes `output_source: "rest_task_poll"` with an empty `output` list.
+
+### Health and Audit
+- `cobalt-strike://health/status`: Returns sanitized MCP/API health metadata without response bodies.
+- Audit logs are emitted on the `cs_mcp.audit` logger for custom tool activity. Set `MCP_AUDIT_LOG_FILE=logs/audit.log` to write them as dedicated JSONL records. They include timestamps, tool names, `MCP_OPERATOR_ID` when set, beacon IDs, task IDs, and status metadata. They do not log command output, bearer tokens, passwords, or downloaded file contents.
 
 ### Downloaded File Tools
 - `getDownloadedFileText`: Fetch `/api/v1/data/downloads/{file_id}` and return bounded file text when the content appears textual. Binary files return metadata only.

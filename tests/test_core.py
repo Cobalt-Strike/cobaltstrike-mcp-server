@@ -36,8 +36,10 @@ if "fastmcp.server.providers.openapi" not in sys.modules:
     sys.modules.setdefault("fastmcp.server.providers.openapi", openapi_module)
 
 import cs_mcp
+from cs_audit import audit_event, configure_audit_logging, logger as audit_logger
 from cs_client import CobaltStrikeClient
 from cs_files import MAX_DOWNLOAD_TEXT_BYTES, _bounded_max_bytes, decode_text_payload
+from cs_resources import build_health_status
 from cs_server import build_route_maps, build_run_kwargs, is_loopback_bind_host
 from cs_streams import (
     CobaltStrikeWebSocketStreamManager,
@@ -137,8 +139,19 @@ class ServerPolicyTests(unittest.TestCase):
             port=3000,
             path="/mcp",
             allow_remote_bind=True,
+            external_auth=True,
         )
         self.assertEqual(kwargs["host"], "0.0.0.0")
+
+    def test_remote_bind_requires_external_auth_confirmation(self) -> None:
+        with self.assertRaisesRegex(ValueError, "external auth"):
+            build_run_kwargs(
+                transport="http",
+                host="0.0.0.0",
+                port=3000,
+                path="/mcp",
+                allow_remote_bind=True,
+            )
 
     def test_unknown_transport_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported MCP transport"):
@@ -276,6 +289,91 @@ class HttpHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(error["ok"])
         self.assertEqual(error["status_code"], 500)
 
+    async def test_request_json_refreshes_token_once_on_401(self) -> None:
+        client = _RefreshableCobaltStrikeClient("https://localhost:50443")
+        client._token = "expired-token"  # pylint: disable=protected-access
+        client._auth_context = object()  # pylint: disable=protected-access
+        client._client = _FakeHttpClient(  # pylint: disable=protected-access
+            [_FakeResponse(401, {"error": "expired"}, text="expired")]
+        )
+        client.refreshed_client = _FakeHttpClient([_FakeResponse(200, {"value": "ok"})])
+
+        result = await client.request_json("GET", "/api/v1/beacons")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"], {"value": "ok"})
+        self.assertTrue(client.refresh_called)
+
+
+class HealthStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def test_build_health_status_uses_mocked_api_response(self) -> None:
+        cs_client = _FakeCobaltStrikeClient(
+            [
+                {
+                    "ok": True,
+                    "endpoint": "/api/v1/config/localip",
+                    "status_code": 200,
+                    "text": "10.0.0.1",
+                }
+            ]
+        )
+        manager = CobaltStrikeWebSocketStreamManager(cs_client, enabled=False)
+
+        result = await build_health_status(cs_client, manager)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["cobalt_strike_api"]["ok"])
+        self.assertFalse(result["websocket_streams"]["enabled"])
+        self.assertNotIn("10.0.0.1", str(result["cobalt_strike_api"]))
+
+
+class AuditTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        for handler in list(audit_logger.handlers):
+            handler.close()
+            audit_logger.removeHandler(handler)
+        audit_logger.propagate = True
+
+    def test_audit_event_logs_sanitized_metadata(self) -> None:
+        with patch.dict(os.environ, {"MCP_OPERATOR_ID": "operator-1"}):
+            with self.assertLogs("cs_mcp.audit", level="INFO") as captured:
+                audit_event(
+                    "tool_invocation",
+                    tool_name="executeBeaconConsoleAndWait",
+                    beacon_id="abc123",
+                    task_id="task-1",
+                    status="completed",
+                    details={"output_source": "rest_task_poll"},
+                )
+        rendered = "\n".join(captured.output)
+        self.assertIn("operator-1", rendered)
+        self.assertIn("executeBeaconConsoleAndWait", rendered)
+        self.assertNotIn("password", rendered.lower())
+
+    def test_configure_audit_logging_writes_jsonl_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audit_path = os.path.join(temp_dir, "audit.log")
+            configure_audit_logging(audit_path)
+            audit_event(
+                "tool_invocation",
+                tool_name="getCobaltStrikeWebsocketStatus",
+                status="completed",
+            )
+            for handler in list(audit_logger.handlers):
+                handler.flush()
+
+            with open(audit_path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+
+            for handler in list(audit_logger.handlers):
+                handler.close()
+                audit_logger.removeHandler(handler)
+            audit_logger.propagate = True
+
+        self.assertEqual(len(lines), 1)
+        self.assertIn('"action": "tool_invocation"', lines[0])
+        self.assertIn('"tool_name": "getCobaltStrikeWebsocketStatus"', lines[0])
+
 
 class _FakeResponse:
     def __init__(self, status_code: int, data, text: str | None = None) -> None:
@@ -295,6 +393,18 @@ class _FakeHttpClient:
         return self._responses.pop(0)
 
 
+class _RefreshableCobaltStrikeClient(CobaltStrikeClient):
+    def __init__(self, base_url: str) -> None:
+        super().__init__(base_url)
+        self.refresh_called = False
+        self.refreshed_client = None
+
+    async def _reauthenticate(self) -> bool:
+        self.refresh_called = True
+        self._client = self.refreshed_client  # pylint: disable=protected-access
+        return True
+
+
 class _FakeCobaltStrikeClient:
     def __init__(self, responses: list[dict]) -> None:
         self.base_url = "https://localhost:50443"
@@ -304,6 +414,10 @@ class _FakeCobaltStrikeClient:
         self.requests: list[tuple[str, str]] = []
 
     async def request_json(self, method: str, path: str, **_kwargs):
+        self.requests.append((method, path))
+        return self._responses.pop(0)
+
+    async def request_text(self, method: str, path: str, **_kwargs):
         self.requests.append((method, path))
         return self._responses.pop(0)
 

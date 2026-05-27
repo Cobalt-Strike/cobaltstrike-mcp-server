@@ -3,13 +3,27 @@
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
+from cs_audit import audit_event
+
 USER_AGENT = "cs-mcp/1.0"
 
 logger = logging.getLogger(__name__)
+_BEACON_PATH_RE = re.compile(r"/api/v\d+/beacons/([^/]+)")
+_TASK_PATH_RE = re.compile(r"/api/v\d+/tasks/([^/]+)")
+
+
+@dataclass(frozen=True)
+class AuthContext:
+    username: str
+    password: str
+    duration_ms: int
+    login_path: str
 
 
 def mcp_error(
@@ -54,6 +68,7 @@ class CobaltStrikeClient:
         self.timeout = timeout
         self._token: str | None = None
         self._client: httpx.AsyncClient | None = None
+        self._auth_context: AuthContext | None = None
 
     async def authenticate(
         self,
@@ -107,7 +122,16 @@ class CobaltStrikeClient:
         if not token:
             raise RuntimeError("Authentication response did not include 'access_token'.")
 
+        if self._client:
+            await self.close()
+
         self._token = token
+        self._auth_context = AuthContext(
+            username=username,
+            password=password,
+            duration_ms=duration_ms,
+            login_path=login_path,
+        )
         logger.info("Successfully authenticated with Cobalt Strike API")
         return token
 
@@ -145,6 +169,10 @@ class CobaltStrikeClient:
                 verify=self.verify_tls,
                 timeout=self.timeout,
                 headers=headers,
+                event_hooks={
+                    "request": [self._audit_request],
+                    "response": [self._audit_response],
+                },
             )
 
         return self._client
@@ -180,8 +208,7 @@ class CobaltStrikeClient:
     async def request_json(self, method: str, path: str, **kwargs) -> dict[str, Any]:
         """Make an authenticated request and return a normalized JSON result."""
         try:
-            client = self.get_authenticated_client()
-            response = await client.request(method, path, **kwargs)
+            response = await self._request_with_reauth(method, path, **kwargs)
             if response.status_code >= 400:
                 return mcp_error(
                     f"HTTP {response.status_code}",
@@ -210,8 +237,7 @@ class CobaltStrikeClient:
     async def request_text(self, method: str, path: str, **kwargs) -> dict[str, Any]:
         """Make an authenticated request and return a normalized text result."""
         try:
-            client = self.get_authenticated_client()
-            response = await client.request(method, path, **kwargs)
+            response = await self._request_with_reauth(method, path, **kwargs)
             if response.status_code >= 400:
                 return mcp_error(
                     f"HTTP {response.status_code}",
@@ -228,6 +254,58 @@ class CobaltStrikeClient:
         except (httpx.HTTPError, RuntimeError) as exc:
             return mcp_error("HTTP request failed", endpoint=path, exception=str(exc))
 
+    async def _request_with_reauth(self, method: str, path: str, **kwargs) -> httpx.Response:
+        client = self.get_authenticated_client()
+        response = await client.request(method, path, **kwargs)
+        if response.status_code == 401 and await self._reauthenticate():
+            client = self.get_authenticated_client()
+            response = await client.request(method, path, **kwargs)
+        return response
+
+    async def _reauthenticate(self) -> bool:
+        if self._auth_context is None:
+            return False
+
+        logger.info("Refreshing Cobalt Strike API token after authentication failure")
+        try:
+            await self.authenticate(
+                username=self._auth_context.username,
+                password=self._auth_context.password,
+                duration_ms=self._auth_context.duration_ms,
+                login_path=self._auth_context.login_path,
+            )
+            return True
+        except RuntimeError as exc:
+            logger.warning("Cobalt Strike API token refresh failed: %s", exc)
+            return False
+
+    async def _audit_request(self, request: httpx.Request) -> None:
+        path = request.url.path
+        audit_event(
+            "api_request",
+            status="started",
+            beacon_id=_extract_path_id(_BEACON_PATH_RE, path),
+            task_id=_extract_path_id(_TASK_PATH_RE, path),
+            details={
+                "method": request.method,
+                "path": path,
+            },
+        )
+
+    async def _audit_response(self, response: httpx.Response) -> None:
+        path = response.request.url.path
+        audit_event(
+            "api_request",
+            status="completed" if response.status_code < 400 else "failed",
+            beacon_id=_extract_path_id(_BEACON_PATH_RE, path),
+            task_id=_extract_path_id(_TASK_PATH_RE, path),
+            details={
+                "method": response.request.method,
+                "path": path,
+                "status_code": response.status_code,
+            },
+        )
+
     async def close(self) -> None:
         """Close the HTTP client and clean up resources."""
         if self._client:
@@ -242,3 +320,10 @@ class CobaltStrikeClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
         await self.close()
+
+
+def _extract_path_id(pattern: re.Pattern, path: str) -> str | None:
+    match = pattern.search(path)
+    if not match:
+        return None
+    return match.group(1)

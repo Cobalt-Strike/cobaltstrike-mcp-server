@@ -8,6 +8,7 @@ import logging
 import os
 from typing import Callable
 
+from cs_audit import configure_audit_logging
 from cs_client import CobaltStrikeClient
 from cs_server import CobaltStrikeMCPServer
 
@@ -163,6 +164,9 @@ def show_environment_variables() -> None:
         "MCP_SERVER_INSTRUCTIONS": "Instructions for MCP clients",
         "MCP_LOG_LEVEL": "Override uvicorn log level for HTTP transport",
         "MCP_ALLOW_REMOTE_BIND": "Allow non-loopback MCP HTTP/SSE binds when protected by external auth/TLS",
+        "MCP_EXTERNAL_AUTH": "Confirm non-loopback MCP HTTP/SSE binds are protected by external auth",
+        "MCP_OPERATOR_ID": "Operator identity included in audit logs when available",
+        "MCP_AUDIT_LOG_FILE": "Optional dedicated JSONL audit log file path",
 
         # Cobalt Strike WebSocket streams
         "CS_WS_ENABLED": "Enable Cobalt Strike WebSocket stream tools (default: true)",
@@ -191,6 +195,7 @@ def configure_logging(default_level: str = "INFO") -> None:
         level=level,
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
+    configure_audit_logging(os.getenv("MCP_AUDIT_LOG_FILE"))
 
 
 def parse_args() -> argparse.Namespace:
@@ -333,6 +338,12 @@ def parse_args() -> argparse.Namespace:
             "Use only behind external auth/TLS controls."
         ),
     )
+    advanced_group.add_argument(
+        "--external-auth",
+        action="store_true",
+        default=env_bool("MCP_EXTERNAL_AUTH", False),
+        help="Confirm non-loopback MCP HTTP/SSE binds are protected by external auth",
+    )
     ws_enabled_default = env_bool("CS_WS_ENABLED", DEFAULT_WS_ENABLED)
     ws_enabled_group = advanced_group.add_mutually_exclusive_group()
     ws_enabled_group.add_argument(
@@ -418,6 +429,7 @@ async def main() -> None:
         "username": args.username,
         "transport": args.transport,
         "listen_address": f"{args.listen_host}:{args.listen_port}{args.listen_path}",
+        "external_auth": args.external_auth,
         "websocket_enabled": args.websocket_enabled,
         "websocket_auto_start": args.websocket_auto_start,
     })
@@ -461,6 +473,7 @@ async def main() -> None:
                 path=args.listen_path,
                 log_level=args.log_level,
                 allow_remote_bind=args.allow_remote_bind,
+                external_auth=args.external_auth,
             )
         except KeyboardInterrupt:
             logger.info("Received keyboard interrupt; shutting down")

@@ -253,10 +253,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastmcp", specifier = ">=3.3.1,<4" },
-    { name = "httpx", specifier = ">=0.25.0" },
-    { name = "typing-extensions", specifier = ">=4.7.0" },
-    { name = "websocket-client", specifier = ">=1.6.0" },
+    { name = "fastmcp", specifier = "==3.3.1" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "typing-extensions", specifier = "==4.15.0" },
+    { name = "websocket-client", specifier = "==1.9.0" },
 ]
 
 [[package]]

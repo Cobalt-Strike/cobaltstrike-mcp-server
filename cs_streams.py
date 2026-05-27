@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover - exercised only when dependency is abse
 
 from fastmcp import FastMCP
 
+from cs_audit import audit_event
 from cs_client import CobaltStrikeClient
 
 logger = logging.getLogger(__name__)
@@ -512,6 +513,13 @@ class CobaltStrikeWebSocketStreamManager:
         if not command_line.strip():
             return {"error": "command_line cannot be empty"}
 
+        audit_event(
+            "tool_invocation",
+            tool_name="executeBeaconConsoleAndWait",
+            beacon_id=normalized_bid,
+            status="started",
+        )
+
         if not self._streams_available():
             return await self._execute_console_and_wait_rest_only(
                 bid=normalized_bid,
@@ -533,6 +541,14 @@ class CobaltStrikeWebSocketStreamManager:
 
         task_result = await self._execute_console_command(normalized_bid, command_line)
         if isinstance(task_result, dict) and task_result.get("error"):
+            audit_event(
+                "tool_invocation",
+                tool_name="executeBeaconConsoleAndWait",
+                beacon_id=normalized_bid,
+                task_id=_task_id(task_result),
+                status="failed",
+                details={"output_source": "websocket"},
+            )
             return {
                 "bid": normalized_bid,
                 "command_line": command_line,
@@ -564,7 +580,7 @@ class CobaltStrikeWebSocketStreamManager:
             min(max(quiet_seconds, 0.1) + 1.0, remaining if not task_completed else max(quiet_seconds, 0.1) + 1.0),
             quiet_seconds,
         )
-        return {
+        result = {
             "bid": normalized_bid,
             "command_line": command_line,
             "task": task_result,
@@ -587,6 +603,18 @@ class CobaltStrikeWebSocketStreamManager:
             "task_completed": task_completed,
             "output_complete": task_completed and not task_detail.get("timed_out", False),
         }
+        audit_event(
+            "tool_invocation",
+            tool_name="executeBeaconConsoleAndWait",
+            beacon_id=normalized_bid,
+            task_id=result.get("task_id"),
+            status="completed" if task_completed else "timed_out",
+            details={
+                "output_source": result.get("output_source"),
+                "output_complete": result.get("output_complete"),
+            },
+        )
+        return result
 
     async def _execute_console_and_wait_rest_only(
         self,
@@ -600,6 +628,14 @@ class CobaltStrikeWebSocketStreamManager:
 
         task_result = await self._execute_console_command(bid, command_line)
         if isinstance(task_result, dict) and task_result.get("error"):
+            audit_event(
+                "tool_invocation",
+                tool_name="executeBeaconConsoleAndWait",
+                beacon_id=bid,
+                task_id=_task_id(task_result),
+                status="failed",
+                details={"output_source": "rest_task_poll"},
+            )
             return {
                 "bid": bid,
                 "command_line": command_line,
@@ -622,7 +658,7 @@ class CobaltStrikeWebSocketStreamManager:
             timeout_seconds=effective_timeout_seconds,
         )
         task_completed = _task_is_terminal(task_detail.get("task"))
-        return {
+        result = {
             "bid": bid,
             "command_line": command_line,
             "task": task_result,
@@ -639,6 +675,15 @@ class CobaltStrikeWebSocketStreamManager:
             "timed_out": task_detail.get("timed_out", False),
             "task_completed": task_completed,
         }
+        audit_event(
+            "tool_invocation",
+            tool_name="executeBeaconConsoleAndWait",
+            beacon_id=bid,
+            task_id=result.get("task_id"),
+            status="completed" if task_completed else "timed_out",
+            details={"output_source": result.get("output_source")},
+        )
+        return result
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -976,30 +1021,65 @@ def add_cobalt_strike_stream_tools(
     @mcp_server.tool()
     async def startCobaltStrikeWebsocketStreams() -> str:
         """Start the default Cobalt Strike WebSocket subscriptions."""
+        audit_event(
+            "tool_invocation",
+            tool_name="startCobaltStrikeWebsocketStreams",
+            status="started",
+        )
         stream_manager.start_defaults()
-        return json.dumps(stream_manager.status(), indent=2)
+        result = stream_manager.status()
+        audit_event(
+            "tool_invocation",
+            tool_name="startCobaltStrikeWebsocketStreams",
+            status="completed",
+            details={"enabled": result.get("enabled")},
+        )
+        return json.dumps(result, indent=2)
 
     @mcp_server.tool()
     async def getCobaltStrikeWebsocketStatus() -> str:
         """Get current status for Cobalt Strike WebSocket stream subscriptions."""
+        audit_event(
+            "tool_invocation",
+            tool_name="getCobaltStrikeWebsocketStatus",
+            status="completed",
+        )
         return json.dumps(stream_manager.status(), indent=2)
 
     @mcp_server.tool()
     async def getBeaconConsoleTail(bid: str, lines: int = 100) -> str:
         """Get recent streamed console output for a beacon."""
         result = stream_manager.beaconlog_tail(bid, lines)
+        audit_event(
+            "tool_invocation",
+            tool_name="getBeaconConsoleTail",
+            beacon_id=result.get("bid") or bid,
+            status="completed" if not result.get("error") else "failed",
+            details={"lines": lines},
+        )
         return json.dumps(result, indent=2)
 
     @mcp_server.tool()
     async def getRecentEventLogTail(lines: int = 100) -> str:
         """Get recent streamed Cobalt Strike event log output."""
         result = stream_manager.eventlog_tail(lines)
+        audit_event(
+            "tool_invocation",
+            tool_name="getRecentEventLogTail",
+            status="completed" if not result.get("error") else "failed",
+            details={"lines": lines},
+        )
         return json.dumps(result, indent=2)
 
     @mcp_server.tool()
     async def getLiveBeaconSnapshot() -> str:
         """Get the latest streamed beacon snapshot."""
         result = stream_manager.beacons_snapshot()
+        audit_event(
+            "tool_invocation",
+            tool_name="getLiveBeaconSnapshot",
+            status="completed" if not result.get("error") else "failed",
+        )
         return json.dumps(result, indent=2)
 
     @mcp_server.tool()

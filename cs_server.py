@@ -100,7 +100,7 @@ class CobaltStrikeMCPServer:
 
         # Add MCP prompts and resources from separate modules
         add_cobalt_strike_prompts(self._mcp_server)
-        add_cobalt_strike_resources(self._mcp_server, self.cs_client)
+        add_cobalt_strike_resources(self._mcp_server, self.cs_client, self.stream_manager)
         add_cobalt_strike_stream_tools(self._mcp_server, self.stream_manager)
         add_cobalt_strike_file_tools(self._mcp_server, self.cs_client)
 
@@ -115,6 +115,7 @@ class CobaltStrikeMCPServer:
         path: str = "/mcp",
         log_level: str | None = None,
         allow_remote_bind: bool = False,
+        external_auth: bool = False,
     ) -> None:
         """Run the MCP server.
         
@@ -125,6 +126,7 @@ class CobaltStrikeMCPServer:
             path: URL path for the MCP endpoint
             log_level: Log level for uvicorn (if using HTTP transport)
             allow_remote_bind: Allow non-loopback HTTP/SSE binds when externally protected
+            external_auth: Confirm non-loopback binds are protected by external auth
         """
         if not self._mcp_server:
             raise RuntimeError("Server not created. Call create_server() first.")
@@ -150,6 +152,7 @@ class CobaltStrikeMCPServer:
                 path=normalized_path,
                 log_level=log_level,
                 allow_remote_bind=allow_remote_bind,
+                external_auth=external_auth,
             )
             self._schedule_websocket_auto_start()
             await self._mcp_server.run_async(**run_kwargs)
@@ -187,6 +190,7 @@ def build_run_kwargs(
     path: str,
     log_level: str | None = None,
     allow_remote_bind: bool = False,
+    external_auth: bool = False,
 ) -> dict[str, object]:
     """Build FastMCP run_async kwargs and enforce bind safety."""
     if transport not in SUPPORTED_TRANSPORTS:
@@ -195,11 +199,18 @@ def build_run_kwargs(
     if transport == "stdio":
         return {"transport": "stdio"}
 
-    if not allow_remote_bind and not is_loopback_bind_host(host):
-        raise ValueError(
-            "Refusing to bind MCP HTTP/SSE transport to non-loopback host "
-            f"{host!r}. Use --allow-remote-bind only when protected by external auth/TLS."
-        )
+    if not is_loopback_bind_host(host):
+        if not allow_remote_bind:
+            raise ValueError(
+                "Refusing to bind MCP HTTP/SSE transport to non-loopback host "
+                f"{host!r}. Use --allow-remote-bind only when protected by external auth/TLS."
+            )
+        if not external_auth:
+            raise ValueError(
+                "Refusing non-loopback MCP HTTP/SSE bind without external auth confirmation. "
+                "Set MCP_EXTERNAL_AUTH=true or pass --external-auth when a reverse proxy, "
+                "mTLS, OIDC, or VPN protects the endpoint."
+            )
 
     kwargs: dict[str, object] = {
         "transport": transport,

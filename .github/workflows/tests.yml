@@ -30,7 +30,7 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install httpx
+          python -m pip install httpx==0.28.1
 
       - name: Run unit tests
         run: python -m unittest
@@ -39,6 +39,7 @@ jobs:
         run: |
           python -m py_compile \
             cs_mcp.py \
+            cs_audit.py \
             cs_client.py \
             cs_server.py \
             cs_files.py \

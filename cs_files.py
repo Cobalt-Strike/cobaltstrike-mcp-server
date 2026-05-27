@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from fastmcp import FastMCP
 
+from cs_audit import audit_event
 from cs_client import CobaltStrikeClient, mcp_error
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,23 @@ def add_cobalt_strike_file_tools(mcp_server: FastMCP, cs_client: CobaltStrikeCli
     @mcp_server.tool()
     async def getDownloadedFileText(file_id: str, max_bytes: int = DEFAULT_MAX_DOWNLOAD_TEXT_BYTES) -> str:
         """Return downloaded file contents when the file is text, otherwise metadata only."""
+        audit_event(
+            "tool_invocation",
+            tool_name="getDownloadedFileText",
+            status="started",
+            details={"max_bytes": _bounded_max_bytes(max_bytes)},
+        )
         result = await fetch_downloaded_file_text(cs_client, file_id=file_id, max_bytes=max_bytes)
+        audit_event(
+            "tool_invocation",
+            tool_name="getDownloadedFileText",
+            status="completed" if not result.get("error") else "failed",
+            details={
+                "bytes_read": result.get("bytes_read"),
+                "truncated": result.get("truncated"),
+                "is_text": result.get("is_text"),
+            },
+        )
         return json.dumps(result, indent=2)
 
     logger.info("Added MCP file tools")

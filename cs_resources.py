@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
     from cs_client import CobaltStrikeClient
+    from cs_streams import CobaltStrikeWebSocketStreamManager
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +31,53 @@ def _resource_error(result: dict[str, Any], message: str) -> str:
     return _json({key: value for key, value in error.items() if value is not None})
 
 
-def add_cobalt_strike_resources(mcp_server: FastMCP, cs_client: CobaltStrikeClient) -> None:
+async def build_health_status(
+    cs_client: CobaltStrikeClient,
+    stream_manager: CobaltStrikeWebSocketStreamManager | None = None,
+) -> dict[str, Any]:
+    """Build a sanitized health/status payload."""
+    api_result = await cs_client.request_text("GET", "/api/v1/config/localip")
+    api_ok = bool(api_result.get("ok"))
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": "ok" if api_ok else "degraded",
+        "cobalt_strike_api": {
+            "ok": api_ok,
+            "endpoint": api_result.get("endpoint"),
+            "status_code": api_result.get("status_code"),
+            "error": api_result.get("error") if not api_ok else None,
+        },
+        "mcp_server": {
+            "authenticated": True,
+            "resources": [
+                "cobalt-strike://health/status",
+                "cobalt-strike://beacons/active",
+                "cobalt-strike://config/server-info",
+                "cobalt-strike://logs/recent-activity",
+                "cobalt-strike://listeners/active",
+                "cobalt-strike://stats/dashboard",
+            ],
+        },
+        "websocket_streams": stream_manager.status() if stream_manager else None,
+    }
+
+
+def add_cobalt_strike_resources(
+    mcp_server: FastMCP,
+    cs_client: CobaltStrikeClient,
+    stream_manager: CobaltStrikeWebSocketStreamManager | None = None,
+) -> None:
     """Add MCP resources to the Cobalt Strike server.
     
     Args:
         mcp_server: The FastMCP server instance to add resources to
         cs_client: The authenticated Cobalt Strike client
     """
+
+    @mcp_server.resource("cobalt-strike://health/status")
+    async def health_status_resource() -> str:
+        """Get sanitized MCP and Cobalt Strike API health status."""
+        return _json(await build_health_status(cs_client, stream_manager))
     
     @mcp_server.resource("cobalt-strike://beacons/active")
     async def active_beacons_resource() -> str:
