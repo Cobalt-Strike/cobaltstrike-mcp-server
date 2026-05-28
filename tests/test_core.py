@@ -10,6 +10,8 @@ import types
 import unittest
 from unittest.mock import patch
 
+import httpx
+
 if "fastmcp.server.providers.openapi" not in sys.modules:
     fastmcp_module = types.ModuleType("fastmcp")
     server_module = types.ModuleType("fastmcp.server")
@@ -38,7 +40,7 @@ if "fastmcp.server.providers.openapi" not in sys.modules:
 
 import cs_mcp
 from cs_audit import audit_event, configure_audit_logging, logger as audit_logger
-from cs_client import CobaltStrikeClient
+from cs_client import CobaltStrikeClient, ReauthenticatingAsyncClient
 from cs_files import MAX_DOWNLOAD_TEXT_BYTES, _bounded_max_bytes, decode_text_payload
 from cs_interpreter import (
     build_interpreter_arguments,
@@ -49,6 +51,7 @@ from cs_interpreter import (
 from cs_resources import build_health_status
 from cs_server import build_route_maps, build_run_kwargs, is_loopback_bind_host
 from cs_streams import (
+    CobaltStrikeWebSocketStream,
     CobaltStrikeWebSocketStreamManager,
     StreamBuffer,
     _task_is_terminal,
@@ -321,6 +324,42 @@ class StreamParsingTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_beacon_id(invalid)
 
+    def test_websocket_connect_uses_current_token_provider_value(self) -> None:
+        sent: list[str] = []
+        stream = CobaltStrikeWebSocketStream(
+            ws_url="wss://teamserver.local:50443/connect",
+            host="teamserver.local",
+            token_provider=lambda: "fresh-token",
+            destination="/subscribe/eventlog",
+            verify_tls=True,
+            reconnect_seconds=0.1,
+            on_payload=lambda _body: None,
+        )
+
+        stream._on_open(_FakeWebSocket(sent))  # pylint: disable=protected-access
+
+        self.assertIn("Authorization:Bearer fresh-token", sent[0])
+
+    def test_websocket_auth_error_refreshes_token_and_closes_socket(self) -> None:
+        refreshed = []
+        sent: list[str] = []
+        ws = _FakeWebSocket(sent)
+        stream = CobaltStrikeWebSocketStream(
+            ws_url="wss://teamserver.local:50443/connect",
+            host="teamserver.local",
+            token_provider=lambda: "expired-token",
+            token_refresh=lambda: refreshed.append(True) or True,
+            destination="/subscribe/eventlog",
+            verify_tls=True,
+            reconnect_seconds=0.1,
+            on_payload=lambda _body: None,
+        )
+
+        stream._on_message(ws, "ERROR\n\n{\"message\": \"401 unauthorized\"}\x00")  # pylint: disable=protected-access
+
+        self.assertEqual(refreshed, [True])
+        self.assertTrue(ws.closed)
+
 
 class StreamFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_console_and_wait_rest_only_when_websockets_disabled(self) -> None:
@@ -419,6 +458,32 @@ class HttpHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"], {"value": "ok"})
         self.assertTrue(client.refresh_called)
+
+    async def test_authenticated_http_client_retries_after_token_refresh(self) -> None:
+        seen_authorization: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_authorization.append(request.headers.get("authorization"))
+            if len(seen_authorization) == 1:
+                return httpx.Response(401, json={"error": "expired"})
+            return httpx.Response(200, json={"value": "ok"})
+
+        owner = _RawClientRefreshOwner()
+        client = ReauthenticatingAsyncClient(
+            owner,
+            base_url="https://localhost:50443",
+            headers={"Authorization": "Bearer expired-token"},
+            transport=httpx.MockTransport(handler),
+        )
+        owner.client = client
+
+        response = await client.get("/api/v1/beacons")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"value": "ok"})
+        self.assertEqual(seen_authorization, ["Bearer expired-token", "Bearer fresh-token"])
+        self.assertTrue(owner.refresh_called)
+        await client.aclose()
 
 
 class HealthStatusTests(unittest.IsolatedAsyncioTestCase):
@@ -519,6 +584,29 @@ class _RefreshableCobaltStrikeClient(CobaltStrikeClient):
         self.refresh_called = True
         self._client = self.refreshed_client  # pylint: disable=protected-access
         return True
+
+
+class _RawClientRefreshOwner:
+    def __init__(self) -> None:
+        self.client = None
+        self.refresh_called = False
+
+    async def _reauthenticate(self) -> bool:
+        self.refresh_called = True
+        self.client.headers["Authorization"] = "Bearer fresh-token"
+        return True
+
+
+class _FakeWebSocket:
+    def __init__(self, sent: list[str]) -> None:
+        self.sent = sent
+        self.closed = False
+
+    def send(self, value: str) -> None:
+        self.sent.append(value)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _FakeCobaltStrikeClient:

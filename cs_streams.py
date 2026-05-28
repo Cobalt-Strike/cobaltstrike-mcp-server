@@ -11,7 +11,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, urlparse, urlunparse
 
 try:
@@ -242,7 +242,8 @@ class CobaltStrikeWebSocketStream:
         *,
         ws_url: str,
         host: str,
-        token: str,
+        token_provider: Callable[[], str],
+        token_refresh: Callable[[], bool] | None = None,
         destination: str,
         verify_tls: bool,
         reconnect_seconds: float,
@@ -250,7 +251,8 @@ class CobaltStrikeWebSocketStream:
     ):
         self.ws_url = ws_url
         self.host = host
-        self.token = token
+        self.token_provider = token_provider
+        self.token_refresh = token_refresh
         self.destination = destination
         self.verify_tls = verify_tls
         self.reconnect_seconds = reconnect_seconds
@@ -315,6 +317,11 @@ class CobaltStrikeWebSocketStream:
         if command == "ERROR":
             self._ready_event.clear()
             self._set_status("error", self._format_error(frame))
+            if self._is_auth_error(frame) and self._refresh_token():
+                try:
+                    _ws.close()
+                except Exception:
+                    pass
             return
         if command == "CONNECTED":
             self._set_status("connected")
@@ -335,20 +342,24 @@ class CobaltStrikeWebSocketStream:
 
     def _on_open(self, ws) -> None:
         self._set_status("connected")
-        ws.send(build_connect_frame(self.token, self.host))
+        ws.send(build_connect_frame(self.token_provider(), self.host))
 
     def _run_loop(self) -> None:
+        reconnecting = False
         while not self._stop_event.is_set():
             try:
                 self._ready_event.clear()
                 self._set_status("connecting")
+                if reconnecting:
+                    self._refresh_token()
+                token = self.token_provider()
                 ws_app = websocket.WebSocketApp(
                     self.ws_url,
                     on_message=self._on_message,
                     on_error=self._on_error,
                     on_close=self._on_close,
                     on_open=self._on_open,
-                    header=[f"Authorization: Bearer {self.token}"],
+                    header=[f"Authorization: Bearer {token}"],
                 )
                 with self._state_lock:
                     self._ws = ws_app
@@ -365,6 +376,7 @@ class CobaltStrikeWebSocketStream:
                     self._ws = None
 
             if not self._stop_event.is_set():
+                reconnecting = True
                 self._stop_event.wait(max(0.1, self.reconnect_seconds))
 
         self._ready_event.clear()
@@ -384,12 +396,26 @@ class CobaltStrikeWebSocketStream:
             if last_error is not None:
                 self.last_error = last_error
 
+    def _refresh_token(self) -> bool:
+        if self.token_refresh is None:
+            return False
+        try:
+            return bool(self.token_refresh())
+        except Exception as exc:  # pylint: disable=broad-except
+            self._set_status("error", f"token refresh failed: {exc}")
+            return False
+
     @staticmethod
     def _format_error(frame: dict[str, Any]) -> str:
         body = frame.get("body")
         if isinstance(body, dict):
             return body.get("message") or body.get("error") or json.dumps(body)
         return str(body) if body else "stream error"
+
+    @classmethod
+    def _is_auth_error(cls, frame: dict[str, Any]) -> bool:
+        rendered = cls._format_error(frame).lower()
+        return any(marker in rendered for marker in ("401", "403", "auth", "token", "unauthorized", "forbidden"))
 
 
 class CobaltStrikeWebSocketStreamManager:
@@ -718,7 +744,8 @@ class CobaltStrikeWebSocketStreamManager:
             stream = CobaltStrikeWebSocketStream(
                 ws_url=ws_url,
                 host=host,
-                token=self.cs_client.access_token,
+                token_provider=lambda: self.cs_client.access_token,
+                token_refresh=self.cs_client.reauthenticate_blocking,
                 destination=destination,
                 verify_tls=self.cs_client.verify_tls,
                 reconnect_seconds=self.reconnect_seconds,

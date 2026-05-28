@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -70,27 +71,14 @@ class CobaltStrikeClient:
         self._client: httpx.AsyncClient | None = None
         self._auth_context: AuthContext | None = None
 
-    async def authenticate(
+    async def _request_access_token(
         self,
+        *,
         username: str,
         password: str,
-        duration_ms: int = 86400000,
-        login_path: str = "/api/auth/login",
+        duration_ms: int,
+        login_path: str,
     ) -> str:
-        """Authenticate with the Cobalt Strike API and return a JWT token.
-        
-        Args:
-            username: Cobalt Strike username
-            password: Cobalt Strike password
-            duration_ms: Requested session duration in milliseconds
-            login_path: Authentication endpoint path
-            
-        Returns:
-            JWT token for authenticated requests
-            
-        Raises:
-            RuntimeError: If authentication fails
-        """
         payload = {
             "username": username,
             "password": password,
@@ -121,6 +109,35 @@ class CobaltStrikeClient:
         token = data.get("access_token")
         if not token:
             raise RuntimeError("Authentication response did not include 'access_token'.")
+        return token
+
+    async def authenticate(
+        self,
+        username: str,
+        password: str,
+        duration_ms: int = 86400000,
+        login_path: str = "/api/auth/login",
+    ) -> str:
+        """Authenticate with the Cobalt Strike API and return a JWT token.
+        
+        Args:
+            username: Cobalt Strike username
+            password: Cobalt Strike password
+            duration_ms: Requested session duration in milliseconds
+            login_path: Authentication endpoint path
+            
+        Returns:
+            JWT token for authenticated requests
+            
+        Raises:
+            RuntimeError: If authentication fails
+        """
+        token = await self._request_access_token(
+            username=username,
+            password=password,
+            duration_ms=duration_ms,
+            login_path=login_path,
+        )
 
         if self._client:
             await self.close()
@@ -164,7 +181,8 @@ class CobaltStrikeClient:
                 "User-Agent": USER_AGENT,
                 "Accept": "application/json",
             }
-            self._client = httpx.AsyncClient(
+            self._client = ReauthenticatingAsyncClient(
+                self,
                 base_url=self.base_url,
                 verify=self.verify_tls,
                 timeout=self.timeout,
@@ -257,7 +275,11 @@ class CobaltStrikeClient:
     async def _request_with_reauth(self, method: str, path: str, **kwargs) -> httpx.Response:
         client = self.get_authenticated_client()
         response = await client.request(method, path, **kwargs)
-        if response.status_code == 401 and await self._reauthenticate():
+        if (
+            response.status_code == 401
+            and not getattr(client, "handles_reauth", False)
+            and await self._reauthenticate()
+        ):
             client = self.get_authenticated_client()
             response = await client.request(method, path, **kwargs)
         return response
@@ -268,16 +290,28 @@ class CobaltStrikeClient:
 
         logger.info("Refreshing Cobalt Strike API token after authentication failure")
         try:
-            await self.authenticate(
+            token = await self._request_access_token(
                 username=self._auth_context.username,
                 password=self._auth_context.password,
                 duration_ms=self._auth_context.duration_ms,
                 login_path=self._auth_context.login_path,
             )
+            self._token = token
+            if self._client is not None:
+                self._client.headers["Authorization"] = f"Bearer {token}"
             return True
         except RuntimeError as exc:
             logger.warning("Cobalt Strike API token refresh failed: %s", exc)
             return False
+
+    def reauthenticate_blocking(self) -> bool:
+        """Refresh the API token from non-async worker threads."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self._reauthenticate())
+        logger.warning("Cannot run blocking token refresh from an active event loop")
+        return False
 
     async def _audit_request(self, request: httpx.Request) -> None:
         path = request.url.path
@@ -327,3 +361,24 @@ def _extract_path_id(pattern: re.Pattern, path: str) -> str | None:
     if not match:
         return None
     return match.group(1)
+
+
+class ReauthenticatingAsyncClient(httpx.AsyncClient):
+    """HTTP client that retries one request after refreshing an expired bearer token."""
+
+    handles_reauth = True
+
+    def __init__(self, owner: CobaltStrikeClient, *args, **kwargs) -> None:
+        self._owner = owner
+        super().__init__(*args, **kwargs)
+
+    async def request(self, method: str, url, **kwargs) -> httpx.Response:
+        response = await super().request(method, url, **kwargs)
+        if response.status_code != 401:
+            return response
+
+        if not await self._owner._reauthenticate():  # pylint: disable=protected-access
+            return response
+
+        await response.aclose()
+        return await super().request(method, url, **kwargs)
