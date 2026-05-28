@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import base64
 import io
 import os
 import sys
@@ -39,6 +40,12 @@ import cs_mcp
 from cs_audit import audit_event, configure_audit_logging, logger as audit_logger
 from cs_client import CobaltStrikeClient
 from cs_files import MAX_DOWNLOAD_TEXT_BYTES, _bounded_max_bytes, decode_text_payload
+from cs_interpreter import (
+    build_interpreter_arguments,
+    build_interpreter_payload,
+    lint_interpreter_c_code,
+    run_interpreter_c_code,
+)
 from cs_resources import build_health_status
 from cs_server import build_route_maps, build_run_kwargs, is_loopback_bind_host
 from cs_streams import (
@@ -116,6 +123,115 @@ class FileToolTests(unittest.TestCase):
         self.assertEqual(_bounded_max_bytes(0), 1)
         self.assertEqual(_bounded_max_bytes("bad"), 65_536)
         self.assertEqual(_bounded_max_bytes(MAX_DOWNLOAD_TEXT_BYTES + 1), MAX_DOWNLOAD_TEXT_BYTES)
+
+
+class InterpreterPayloadTests(unittest.TestCase):
+    def test_build_interpreter_payload_encodes_script_content(self) -> None:
+        payload = build_interpreter_payload(script="int go() { return 0; }\n")
+
+        self.assertEqual(payload["script"], "@files/script.c")
+        self.assertEqual(
+            base64.b64decode(payload["files"]["script.c"]).decode("utf-8"),
+            "int go() { return 0; }\n",
+        )
+
+    def test_build_interpreter_payload_accepts_base64_script_and_extra_files(self) -> None:
+        script_b64 = base64.b64encode(b"int go() { return helper(); }").decode("ascii")
+        header_b64 = base64.b64encode(b"int helper(void);").decode("ascii")
+
+        payload = build_interpreter_payload(
+            script=script_b64,
+            script_is_base64=True,
+            script_file_name="main.c",
+            files={"helper.h": header_b64},
+            files_are_base64=True,
+        )
+
+        self.assertEqual(payload["script"], "@files/main.c")
+        self.assertEqual(payload["files"]["main.c"], script_b64)
+        self.assertEqual(payload["files"]["helper.h"], header_b64)
+
+    def test_build_interpreter_arguments_formats_typed_values(self) -> None:
+        arguments = build_interpreter_arguments(
+            [
+                {"value": "aGVsbG8A", "type": "binary"},
+                {"value": 42, "type": "int"},
+                {"value": 7, "type": "short"},
+                {"value": 'he"llo', "type": "str"},
+                {"value": "wide\\path", "type": "wideStr"},
+            ]
+        )
+
+        self.assertEqual(arguments, '"biszZ" "aGVsbG8A" 42 7 "he\\"llo" "wide\\\\path"')
+
+    def test_build_interpreter_arguments_matches_echo_example(self) -> None:
+        arguments = build_interpreter_arguments(
+            [
+                {"value": "hello", "type": "str"},
+                {"value": 42, "type": "int"},
+            ]
+        )
+
+        self.assertEqual(arguments, '"zi" "hello" 42')
+
+    def test_build_interpreter_arguments_rejects_bad_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "valid base64"):
+            build_interpreter_arguments([{"value": "not base64!", "type": "binary"}])
+        with self.assertRaisesRegex(ValueError, "between"):
+            build_interpreter_arguments([{"value": 32768, "type": "short"}])
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            build_interpreter_arguments([{"value": "x", "type": "float"}])
+
+
+class InterpreterRequestTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lint_interpreter_c_code_posts_lint_payload(self) -> None:
+        cs_client = _FakeCobaltStrikeClient([{"ok": True, "data": {"lint": "ok"}}])
+
+        result = await lint_interpreter_c_code(
+            cs_client,
+            bid="abc123",
+            script="int go() { return 0; }",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(cs_client.requests, [("POST", "/api/v1/beacons/abc123/execute/interpreter/lint")])
+        payload = cs_client.request_kwargs[0]["json"]
+        self.assertEqual(payload["script"], "@files/script.c")
+        self.assertEqual(
+            base64.b64decode(payload["files"]["script.c"]).decode("utf-8"),
+            "int go() { return 0; }",
+        )
+
+    async def test_run_interpreter_c_code_posts_execution_payload_with_arguments(self) -> None:
+        cs_client = _FakeCobaltStrikeClient([{"ok": True, "data": {"taskId": "task-1"}}])
+
+        result = await run_interpreter_c_code(
+            cs_client,
+            bid="abc:123",
+            script="int go() { return 0; }",
+            arguments=[
+                {"value": "hello", "type": "str"},
+                {"value": 42, "type": "int"},
+            ],
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(cs_client.requests, [("POST", "/api/v1/beacons/abc%3A123/execute/interpreter")])
+        payload = cs_client.request_kwargs[0]["json"]
+        self.assertEqual(payload["arguments"], '"zi" "hello" 42')
+
+    async def test_run_interpreter_c_code_returns_validation_error_without_request(self) -> None:
+        cs_client = _FakeCobaltStrikeClient([])
+
+        result = await run_interpreter_c_code(
+            cs_client,
+            bid="../bad",
+            script="int go() { return 0; }",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("invalid", result["exception"])
+        self.assertEqual(cs_client.requests, [])
 
 
 class ServerPolicyTests(unittest.TestCase):
@@ -412,13 +528,16 @@ class _FakeCobaltStrikeClient:
         self.access_token = "token"
         self._responses = responses
         self.requests: list[tuple[str, str]] = []
+        self.request_kwargs: list[dict] = []
 
-    async def request_json(self, method: str, path: str, **_kwargs):
+    async def request_json(self, method: str, path: str, **kwargs):
         self.requests.append((method, path))
+        self.request_kwargs.append(kwargs)
         return self._responses.pop(0)
 
-    async def request_text(self, method: str, path: str, **_kwargs):
+    async def request_text(self, method: str, path: str, **kwargs):
         self.requests.append((method, path))
+        self.request_kwargs.append(kwargs)
         return self._responses.pop(0)
 
 

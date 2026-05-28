@@ -11,6 +11,7 @@ from fastmcp.server.providers.openapi import RouteMap, MCPType
 
 from cs_client import CobaltStrikeClient
 from cs_files import add_cobalt_strike_file_tools
+from cs_interpreter import add_cobalt_strike_interpreter_tools
 from cs_prompts import add_cobalt_strike_prompts
 from cs_resources import add_cobalt_strike_resources
 from cs_streams import CobaltStrikeWebSocketStreamManager, add_cobalt_strike_stream_tools
@@ -103,6 +104,7 @@ class CobaltStrikeMCPServer:
         add_cobalt_strike_resources(self._mcp_server, self.cs_client, self.stream_manager)
         add_cobalt_strike_stream_tools(self._mcp_server, self.stream_manager)
         add_cobalt_strike_file_tools(self._mcp_server, self.cs_client)
+        add_cobalt_strike_interpreter_tools(self._mcp_server, self.cs_client)
 
         logger.info("Created FastMCP server with OpenAPI specification")
         return self._mcp_server
