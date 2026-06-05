@@ -223,6 +223,10 @@ The MCP server automatically exposes all [Cobalt Strike REST API endpoints](http
 - `executeDownload`: Download files from target systems
 - [...]
 
+### Beacon Interpreter
+- `lintBeaconInterpreterC`: Lint Beacon Interpreter C through `/api/v1/beacons/{bid}/execute/interpreter/lint`.
+- `runBeaconInterpreterC`: Execute Beacon Interpreter C through `/api/v1/beacons/{bid}/execute/interpreter/pack`; typed `arguments` are passed as the API-native array and packed by Cobalt Strike.
+
 ### WebSocket Stream Tools
 - `startCobaltStrikeWebsocketStreams`: Start default `/subscribe/beacons` and `/subscribe/eventlog` stream subscriptions
 - `getCobaltStrikeWebsocketStatus`: Inspect stream connection status and buffer state

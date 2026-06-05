@@ -1,4 +1,4 @@
-"""MCP tools for safe usage of the Cobalt Strike interpreter."""
+"""MCP tools for Cobalt Strike Beacon interpreter lint and execution."""
 
 from __future__ import annotations
 
@@ -19,23 +19,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SCRIPT_FILE_NAME = "script.c"
 FILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
-ARGUMENT_TYPE_CODES = {
-    "b": "b",
-    "binary": "b",
-    "i": "i",
-    "int": "i",
-    "integer": "i",
-    "s": "s",
-    "short": "s",
-    "z": "z",
-    "str": "z",
-    "string": "z",
-    "Z": "Z",
-    "widestr": "Z",
-    "wideStr": "Z",
-    "wide_str": "Z",
-    "wide-string": "Z",
-}
+SCRIPT_FILE_REFERENCE_RE = re.compile(r"^@files/([A-Za-z0-9._-]+)$")
+SCRIPT_ARTIFACT_REFERENCE_RE = re.compile(r"^@artifacts/[A-Za-z0-9._:/-]+$")
+ARGUMENT_TYPES = {"binary", "int", "short", "str", "wideStr"}
 INT_MIN = -(2**31)
 INT_MAX = 2**31 - 1
 SHORT_MIN = -(2**15)
@@ -43,33 +29,32 @@ SHORT_MAX = 2**15 - 1
 
 
 def add_cobalt_strike_interpreter_tools(mcp_server: FastMCP, cs_client: CobaltStrikeClient) -> None:
-    """Add MCP tools for Cobalt Strike Beacon interpreter C lint and execution."""
+    """Add MCP tools for Cobalt Strike Beacon Interpreter C lint and execution."""
 
     @mcp_server.tool()
     async def lintBeaconInterpreterC(
         bid: str,
         script: str,
-        script_is_base64: bool = False,
-        script_file_name: str = DEFAULT_SCRIPT_FILE_NAME,
         files: dict[str, str] | None = None,
-        files_are_base64: bool = False,
     ) -> str:
-        """Lint Beacon interpreter C source using /execute/interpreter/lint."""
+        """Lint Beacon Interpreter C source using /execute/interpreter/lint.
+
+        The script value may be inline C source or a symbolic reference such as
+        @files/script.c or @artifacts/scripts/script.c. Values in files must be
+        base64 content keyed by file name when a @files reference is used.
+        """
         audit_event(
             "tool_invocation",
             tool_name="lintBeaconInterpreterC",
             beacon_id=str(bid),
             status="started",
-            details={"script_file_name": script_file_name, "extra_file_count": len(files or {})},
+            details={"script": _audit_script_value(script), "file_count": _safe_len(files)},
         )
         result = await lint_interpreter_c_code(
             cs_client,
             bid=bid,
             script=script,
-            script_is_base64=script_is_base64,
-            script_file_name=script_file_name,
             files=files,
-            files_are_base64=files_are_base64,
         )
         audit_event(
             "tool_invocation",
@@ -85,21 +70,22 @@ def add_cobalt_strike_interpreter_tools(mcp_server: FastMCP, cs_client: CobaltSt
         bid: str,
         script: str,
         arguments: list[dict[str, Any]] | None = None,
-        script_is_base64: bool = False,
-        script_file_name: str = DEFAULT_SCRIPT_FILE_NAME,
         files: dict[str, str] | None = None,
-        files_are_base64: bool = False,
     ) -> str:
-        """Execute Beacon interpreter C source using /execute/interpreter."""
+        """Execute Beacon Interpreter C source using /execute/interpreter/pack.
+
+        The API now packs typed arguments server-side. Pass arguments as an array
+        of objects with type one of binary, int, short, str, or wideStr.
+        """
         audit_event(
             "tool_invocation",
             tool_name="runBeaconInterpreterC",
             beacon_id=str(bid),
             status="started",
             details={
-                "script_file_name": script_file_name,
-                "extra_file_count": len(files or {}),
-                "argument_count": len(arguments or []),
+                "script": _audit_script_value(script),
+                "file_count": _safe_len(files),
+                "argument_count": _safe_len(arguments),
             },
         )
         result = await run_interpreter_c_code(
@@ -107,10 +93,7 @@ def add_cobalt_strike_interpreter_tools(mcp_server: FastMCP, cs_client: CobaltSt
             bid=bid,
             script=script,
             arguments=arguments,
-            script_is_base64=script_is_base64,
-            script_file_name=script_file_name,
             files=files,
-            files_are_base64=files_are_base64,
         )
         audit_event(
             "tool_invocation",
@@ -129,21 +112,12 @@ async def lint_interpreter_c_code(
     *,
     bid: str,
     script: str,
-    script_is_base64: bool = False,
-    script_file_name: str = DEFAULT_SCRIPT_FILE_NAME,
     files: dict[str, str] | None = None,
-    files_are_base64: bool = False,
 ) -> dict[str, Any]:
     """Submit interpreter C source to the Beacon lint endpoint."""
     try:
         encoded_bid = quote(validate_beacon_id(bid), safe="")
-        payload = build_interpreter_payload(
-            script=script,
-            script_is_base64=script_is_base64,
-            script_file_name=script_file_name,
-            files=files,
-            files_are_base64=files_are_base64,
-        )
+        payload = build_interpreter_payload(script=script, files=files)
     except ValueError as exc:
         return mcp_error("Invalid interpreter lint request", exception=str(exc))
 
@@ -160,29 +134,20 @@ async def run_interpreter_c_code(
     bid: str,
     script: str,
     arguments: list[dict[str, Any]] | None = None,
-    script_is_base64: bool = False,
-    script_file_name: str = DEFAULT_SCRIPT_FILE_NAME,
     files: dict[str, str] | None = None,
-    files_are_base64: bool = False,
 ) -> dict[str, Any]:
-    """Submit interpreter C source to the Beacon execution endpoint."""
+    """Submit interpreter C source to the Beacon pack endpoint."""
     try:
         encoded_bid = quote(validate_beacon_id(bid), safe="")
-        payload = build_interpreter_payload(
-            script=script,
-            script_is_base64=script_is_base64,
-            script_file_name=script_file_name,
-            files=files,
-            files_are_base64=files_are_base64,
-        )
+        payload = build_interpreter_payload(script=script, files=files)
         if arguments is not None:
-            payload["arguments"] = build_interpreter_arguments(arguments)
+            payload["arguments"] = normalize_interpreter_arguments(arguments)
     except ValueError as exc:
         return mcp_error("Invalid interpreter execution request", exception=str(exc))
 
     return await cs_client.request_json(
         "POST",
-        f"/api/v1/beacons/{encoded_bid}/execute/interpreter",
+        f"/api/v1/beacons/{encoded_bid}/execute/interpreter/pack",
         json=payload,
     )
 
@@ -190,35 +155,58 @@ async def run_interpreter_c_code(
 def build_interpreter_payload(
     *,
     script: str,
-    script_is_base64: bool = False,
-    script_file_name: str = DEFAULT_SCRIPT_FILE_NAME,
     files: dict[str, str] | None = None,
-    files_are_base64: bool = False,
 ) -> dict[str, Any]:
-    """Build the REST payload for interpreter lint/execute requests."""
-    normalized_script_file_name = _normalize_file_name(script_file_name)
-    encoded_files: dict[str, str] = {}
+    """Build the REST payload for interpreter lint/pack requests."""
+    script_value = _require_script(script)
+    payload_files = normalize_interpreter_files(files)
 
-    for file_name, content in (files or {}).items():
-        normalized_file_name = _normalize_file_name(file_name)
-        encoded_files[normalized_file_name] = _encode_file_content(content, is_base64=files_are_base64)
+    file_reference = SCRIPT_FILE_REFERENCE_RE.fullmatch(script_value.strip())
+    if file_reference:
+        file_name = file_reference.group(1)
+        if file_name not in payload_files:
+            raise ValueError(f"files must include {file_name!r} when script references @files/{file_name}")
+        return {"script": script_value.strip(), "files": payload_files}
 
-    encoded_files[normalized_script_file_name] = _encode_file_content(script, is_base64=script_is_base64)
+    if SCRIPT_ARTIFACT_REFERENCE_RE.fullmatch(script_value.strip()):
+        payload: dict[str, Any] = {"script": script_value.strip()}
+        if payload_files:
+            payload["files"] = payload_files
+        return payload
 
+    if script_value.strip().startswith("@"):
+        raise ValueError("script must be inline C source, @files/<file>, or @artifacts/<path>")
+
+    if DEFAULT_SCRIPT_FILE_NAME in payload_files:
+        raise ValueError(f"files cannot include {DEFAULT_SCRIPT_FILE_NAME!r} when script is inline source")
+
+    payload_files[DEFAULT_SCRIPT_FILE_NAME] = _encode_inline_source(script_value)
     return {
-        "script": f"@files/{normalized_script_file_name}",
-        "files": encoded_files,
+        "script": f"@files/{DEFAULT_SCRIPT_FILE_NAME}",
+        "files": payload_files,
     }
 
 
-def build_interpreter_arguments(arguments: list[dict[str, Any]]) -> str:
-    """Convert structured argument descriptors into Cobalt Strike packed argument syntax."""
+def normalize_interpreter_files(files: dict[str, str] | None) -> dict[str, str]:
+    """Validate a file map according to the interpreter API schema."""
+    if files is None:
+        return {}
+    if not isinstance(files, dict):
+        raise ValueError("files must be an object mapping file names to base64 content")
+
+    normalized: dict[str, str] = {}
+    for file_name, content in files.items():
+        normalized_name = _normalize_file_name(file_name)
+        normalized[normalized_name] = _normalize_base64(content, f"files[{normalized_name!r}]")
+    return normalized
+
+
+def normalize_interpreter_arguments(arguments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate typed arguments and return the API-native pack argument array."""
     if not isinstance(arguments, list):
         raise ValueError("arguments must be a list")
 
-    type_codes: list[str] = []
-    values: list[str] = []
-
+    normalized: list[dict[str, Any]] = []
     for index, argument in enumerate(arguments):
         if not isinstance(argument, dict):
             raise ValueError(f"arguments[{index}] must be an object")
@@ -227,57 +215,53 @@ def build_interpreter_arguments(arguments: list[dict[str, Any]]) -> str:
         if "value" not in argument:
             raise ValueError(f"arguments[{index}].value is required")
 
-        type_code = _argument_type_code(argument["type"])
-        type_codes.append(type_code)
-        values.append(_format_argument_value(type_code, argument["value"], index))
+        arg_type = argument["type"]
+        if arg_type not in ARGUMENT_TYPES:
+            allowed = ", ".join(sorted(ARGUMENT_TYPES))
+            raise ValueError(f"arguments[{index}].type must be one of: {allowed}")
 
-    return " ".join([_quote_argument("".join(type_codes)), *values])
+        value = argument["value"]
+        if arg_type == "binary":
+            _require_string(value, f"arguments[{index}].value")
+            _validate_base64(value, f"arguments[{index}].value")
+        elif arg_type == "int":
+            _require_integer(value, INT_MIN, INT_MAX, f"arguments[{index}].value")
+        elif arg_type == "short":
+            _require_integer(value, SHORT_MIN, SHORT_MAX, f"arguments[{index}].value")
+        else:
+            _require_string(value, f"arguments[{index}].value")
 
+        normalized.append({"type": arg_type, "value": value})
 
-def _argument_type_code(raw_type: Any) -> str:
-    key = str(raw_type).strip()
-    type_code = ARGUMENT_TYPE_CODES.get(key) or ARGUMENT_TYPE_CODES.get(key.lower())
-    if not type_code:
-        raise ValueError(f"unsupported argument type: {raw_type!r}")
-    return type_code
-
-
-def _format_argument_value(type_code: str, value: Any, index: int) -> str:
-    if type_code == "i":
-        return str(_bounded_integer(value, INT_MIN, INT_MAX, f"arguments[{index}].value"))
-    if type_code == "s":
-        return str(_bounded_integer(value, SHORT_MIN, SHORT_MAX, f"arguments[{index}].value"))
-    if type_code == "b":
-        encoded = str(value)
-        _validate_base64(encoded, f"arguments[{index}].value")
-        return _quote_argument(encoded)
-    return _quote_argument(str(value))
+    return normalized
 
 
-def _bounded_integer(value: Any, minimum: int, maximum: int, field_name: str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{field_name} must be an integer, not a boolean")
-    try:
-        integer = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field_name} must be an integer") from exc
-    if integer < minimum or integer > maximum:
+def _require_script(script: str) -> str:
+    if not isinstance(script, str):
+        raise ValueError("script must be a string")
+    if not script.strip():
+        raise ValueError("script is required")
+    return script
+
+
+def _require_string(value: Any, field_name: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+
+
+def _require_integer(value: Any, minimum: int, maximum: int, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer")
+    if value < minimum or value > maximum:
         raise ValueError(f"{field_name} must be between {minimum} and {maximum}")
-    return integer
 
 
-def _quote_argument(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+def _encode_inline_source(script: str) -> str:
+    return base64.b64encode(script.encode("utf-8")).decode("ascii")
 
 
-def _encode_file_content(content: str, *, is_base64: bool) -> str:
-    if is_base64:
-        return _normalize_base64(str(content), "file content")
-    return base64.b64encode(str(content).encode("utf-8")).decode("ascii")
-
-
-def _normalize_base64(value: str, field_name: str) -> str:
+def _normalize_base64(value: Any, field_name: str) -> str:
+    _require_string(value, field_name)
     decoded = _validate_base64(value, field_name)
     return base64.b64encode(decoded).decode("ascii")
 
@@ -298,3 +282,18 @@ def _normalize_file_name(file_name: str) -> str:
     if normalized in {".", ".."}:
         raise ValueError("file name cannot be a relative path marker")
     return normalized
+
+
+def _audit_script_value(script: Any) -> str:
+    if isinstance(script, str):
+        stripped = script.strip()
+        if SCRIPT_FILE_REFERENCE_RE.fullmatch(stripped) or SCRIPT_ARTIFACT_REFERENCE_RE.fullmatch(stripped):
+            return stripped
+    return "<inline-source>"
+
+
+def _safe_len(value: Any) -> int:
+    try:
+        return len(value or [])
+    except TypeError:
+        return 0
