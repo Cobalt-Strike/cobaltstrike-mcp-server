@@ -467,6 +467,21 @@ class HttpHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["data"], {"value": "ok"})
         self.assertTrue(client.refresh_called)
 
+    async def test_request_json_refreshes_token_once_on_403(self) -> None:
+        client = _RefreshableCobaltStrikeClient("https://localhost:50443")
+        client._token = "expired-token"  # pylint: disable=protected-access
+        client._auth_context = object()  # pylint: disable=protected-access
+        client._client = _FakeHttpClient(  # pylint: disable=protected-access
+            [_FakeResponse(403, {"error": "expired"}, text="expired")]
+        )
+        client.refreshed_client = _FakeHttpClient([_FakeResponse(200, {"value": "ok"})])
+
+        result = await client.request_json("GET", "/api/v1/beacons")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"], {"value": "ok"})
+        self.assertTrue(client.refresh_called)
+
     async def test_authenticated_http_client_retries_after_token_refresh(self) -> None:
         seen_authorization: list[str | None] = []
 
@@ -489,6 +504,59 @@ class HttpHelperTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"value": "ok"})
+        self.assertEqual(seen_authorization, ["Bearer expired-token", "Bearer fresh-token"])
+        self.assertTrue(owner.refresh_called)
+        await client.aclose()
+
+    async def test_authenticated_http_client_retries_after_403_token_refresh(self) -> None:
+        seen_authorization: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_authorization.append(request.headers.get("authorization"))
+            if len(seen_authorization) == 1:
+                return httpx.Response(403, json={"error": "expired"})
+            return httpx.Response(200, json={"value": "ok"})
+
+        owner = _RawClientRefreshOwner()
+        client = ReauthenticatingAsyncClient(
+            owner,
+            base_url="https://localhost:50443",
+            headers={"Authorization": "Bearer expired-token"},
+            transport=httpx.MockTransport(handler),
+        )
+        owner.client = client
+
+        response = await client.get("/api/v1/beacons")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"value": "ok"})
+        self.assertEqual(seen_authorization, ["Bearer expired-token", "Bearer fresh-token"])
+        self.assertTrue(owner.refresh_called)
+        await client.aclose()
+
+    async def test_authenticated_http_client_stream_retries_after_token_refresh(self) -> None:
+        seen_authorization: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_authorization.append(request.headers.get("authorization"))
+            if len(seen_authorization) == 1:
+                return httpx.Response(403, content=b"expired")
+            return httpx.Response(200, content=b"ok")
+
+        owner = _RawClientRefreshOwner()
+        client = ReauthenticatingAsyncClient(
+            owner,
+            base_url="https://localhost:50443",
+            headers={"Authorization": "Bearer expired-token"},
+            transport=httpx.MockTransport(handler),
+        )
+        owner.client = client
+
+        async with client.stream("GET", "/api/v1/data/downloads/file-1") as response:
+            body = await response.aread()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body, b"ok")
         self.assertEqual(seen_authorization, ["Bearer expired-token", "Bearer fresh-token"])
         self.assertTrue(owner.refresh_called)
         await client.aclose()

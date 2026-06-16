@@ -17,6 +17,7 @@ USER_AGENT = "cs-mcp/1.0"
 logger = logging.getLogger(__name__)
 _BEACON_PATH_RE = re.compile(r"/api/v\d+/beacons/([^/]+)")
 _TASK_PATH_RE = re.compile(r"/api/v\d+/tasks/([^/]+)")
+AUTH_FAILURE_STATUS_CODES = {401, 403}
 
 
 @dataclass(frozen=True)
@@ -276,7 +277,7 @@ class CobaltStrikeClient:
         client = self.get_authenticated_client()
         response = await client.request(method, path, **kwargs)
         if (
-            response.status_code == 401
+            response.status_code in AUTH_FAILURE_STATUS_CODES
             and not getattr(client, "handles_reauth", False)
             and await self._reauthenticate()
         ):
@@ -372,13 +373,15 @@ class ReauthenticatingAsyncClient(httpx.AsyncClient):
         self._owner = owner
         super().__init__(*args, **kwargs)
 
-    async def request(self, method: str, url, **kwargs) -> httpx.Response:
-        response = await super().request(method, url, **kwargs)
-        if response.status_code != 401:
+    async def send(self, request: httpx.Request, **kwargs) -> httpx.Response:
+        response = await super().send(request, **kwargs)
+        if response.status_code not in AUTH_FAILURE_STATUS_CODES:
             return response
 
         if not await self._owner._reauthenticate():  # pylint: disable=protected-access
             return response
 
         await response.aclose()
-        return await super().request(method, url, **kwargs)
+        if "Authorization" in self.headers:
+            request.headers["Authorization"] = self.headers["Authorization"]
+        return await super().send(request, **kwargs)
