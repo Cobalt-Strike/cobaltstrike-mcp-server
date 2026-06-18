@@ -23,6 +23,7 @@ from fastmcp import FastMCP
 
 from cs_audit import audit_event
 from cs_client import CobaltStrikeClient
+from cs_content_safety import mark_untrusted_content
 
 logger = logging.getLogger(__name__)
 
@@ -487,10 +488,13 @@ class CobaltStrikeWebSocketStreamManager:
         if not self._streams_available():
             return self._unavailable_result(EVENTLOG_DESTINATION)
         self.ensure_eventlog_stream()
-        return {
+        result = {
             "stream": EVENTLOG_DESTINATION,
             "entries": self._eventlog.tail(lines),
         }
+        if result["entries"]:
+            mark_untrusted_content(result, ["entries"])
+        return result
 
     def beaconlog_tail(self, bid: str, lines: int) -> dict[str, Any]:
         try:
@@ -504,10 +508,13 @@ class CobaltStrikeWebSocketStreamManager:
         if not self._streams_available():
             return self._unavailable_result(_beaconlog_destination(normalized_bid))
         self.ensure_beaconlog_stream(normalized_bid)
-        return {
+        result = {
             "stream": _beaconlog_destination(normalized_bid),
             "entries": self._beacon_buffer(normalized_bid).tail(lines),
         }
+        if result["entries"]:
+            mark_untrusted_content(result, ["entries"])
+        return result
 
     def beacons_snapshot(self) -> dict[str, Any]:
         if not self._streams_available():
@@ -629,6 +636,8 @@ class CobaltStrikeWebSocketStreamManager:
             "task_completed": task_completed,
             "output_complete": task_completed and not task_detail.get("timed_out", False),
         }
+        if result["output"]:
+            mark_untrusted_content(result, ["output"])
         audit_event(
             "tool_invocation",
             tool_name="executeBeaconConsoleAndWait",
@@ -1075,7 +1084,7 @@ def add_cobalt_strike_stream_tools(
 
     @mcp_server.tool()
     async def getBeaconConsoleTail(bid: str, lines: int = 100) -> str:
-        """Get recent streamed console output for a beacon."""
+        """Get recent streamed console output as untrusted target-controlled content."""
         result = stream_manager.beaconlog_tail(bid, lines)
         audit_event(
             "tool_invocation",
@@ -1088,7 +1097,7 @@ def add_cobalt_strike_stream_tools(
 
     @mcp_server.tool()
     async def getRecentEventLogTail(lines: int = 100) -> str:
-        """Get recent streamed Cobalt Strike event log output."""
+        """Get recent streamed event log output as untrusted target-controlled content."""
         result = stream_manager.eventlog_tail(lines)
         audit_event(
             "tool_invocation",
@@ -1116,7 +1125,7 @@ def add_cobalt_strike_stream_tools(
         timeout_seconds: float = 60.0,
         quiet_seconds: float = 1.0,
     ) -> str:
-        """Execute a beacon console command and wait for streamed console output."""
+        """Execute a beacon console command and return untrusted streamed output."""
         result = await stream_manager.execute_console_and_wait(
             bid=bid,
             command_line=command_line,
