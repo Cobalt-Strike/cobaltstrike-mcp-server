@@ -30,8 +30,23 @@ logger = logging.getLogger(__name__)
 BEACONS_DESTINATION = "/subscribe/beacons"
 EVENTLOG_DESTINATION = "/subscribe/eventlog"
 BEACONLOG_DESTINATION_TEMPLATE = "/subscribe/beaconlog/{bid}"
-TASK_IN_PROGRESS_STATUSES = {"QUEUED", "PENDING", "RUNNING", "IN_PROGRESS", "IN PROGRESS"}
-TASK_TERMINAL_STATUSES = {"COMPLETED", "FAILED", "CANCELED", "CANCELLED", "TIMEOUT", "TIMED_OUT"}
+TASK_IN_PROGRESS_STATUSES = {
+    "QUEUED",
+    "PENDING",
+    "RUNNING",
+    "IN_PROGRESS",
+    "IN PROGRESS",
+    "OUTPUT_RECEIVED",
+}
+TASK_TERMINAL_STATUSES = {
+    "COMPLETED",
+    "FAILED",
+    "CANCELED",
+    "CANCELLED",
+    "NOT_FOUND",
+    "TIMEOUT",
+    "TIMED_OUT",
+}
 DEFAULT_SLEEP_WAIT_MARGIN_SECONDS = 30.0
 DEFAULT_SLEEP_WAIT_CYCLES = 2.0
 LONG_SLEEP_NOTICE_THRESHOLD_SECONDS = 60.0
@@ -134,11 +149,6 @@ class StreamBuffer:
         with self._condition:
             return self._sequence
 
-    @property
-    def first_sequence(self) -> int | None:
-        with self._condition:
-            return self._entries[0].sequence if self._entries else None
-
     def append(self, data: Any) -> int:
         with self._condition:
             self._sequence += 1
@@ -151,70 +161,6 @@ class StreamBuffer:
         count = max(1, min(count, self._entries.maxlen or count))
         with self._condition:
             return [entry.to_dict() for entry in list(self._entries)[-count:]]
-
-    def since(self, sequence: int) -> list[StreamEntry]:
-        with self._condition:
-            return [entry for entry in self._entries if entry.sequence > sequence]
-
-    def wait_for_entries(
-        self,
-        after_sequence: int,
-        timeout_seconds: float,
-        poll_seconds: float = 0.25,
-    ) -> list[StreamEntry]:
-        deadline = time.monotonic() + max(0.1, timeout_seconds)
-        with self._condition:
-            while True:
-                entries = [entry for entry in self._entries if entry.sequence > after_sequence]
-                if entries:
-                    return entries
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return []
-                self._condition.wait(min(remaining, poll_seconds))
-
-    def wait_for_quiet(
-        self,
-        after_sequence: int,
-        timeout_seconds: float,
-        quiet_seconds: float,
-    ) -> list[dict[str, Any]]:
-        return self.wait_for_quiet_result(
-            after_sequence,
-            timeout_seconds,
-            quiet_seconds,
-        )["entries"]
-
-    def wait_for_quiet_result(
-        self,
-        after_sequence: int,
-        timeout_seconds: float,
-        quiet_seconds: float,
-    ) -> dict[str, Any]:
-        deadline = time.monotonic() + max(0.1, timeout_seconds)
-        quiet_seconds = max(0.0, quiet_seconds)
-        last_sequence = -1
-        last_change = time.monotonic()
-
-        with self._condition:
-            while True:
-                entries = [entry for entry in self._entries if entry.sequence > after_sequence]
-                now = time.monotonic()
-                current_sequence = entries[-1].sequence if entries else self._sequence
-
-                if current_sequence != last_sequence:
-                    last_sequence = current_sequence
-                    last_change = now
-
-                if entries and now - last_change >= quiet_seconds:
-                    return self._result_after_locked(after_sequence)
-
-                remaining = deadline - now
-                if remaining <= 0:
-                    return self._result_after_locked(after_sequence)
-
-                wait_for = min(remaining, quiet_seconds or remaining, 0.25)
-                self._condition.wait(wait_for)
 
     def result_since(self, after_sequence: int) -> dict[str, Any]:
         with self._condition:
@@ -532,7 +478,6 @@ class CobaltStrikeWebSocketStreamManager:
         bid: str,
         command_line: str,
         timeout_seconds: float,
-        quiet_seconds: float,
     ) -> dict[str, Any]:
         try:
             normalized_bid = validate_beacon_id(bid)
@@ -580,7 +525,7 @@ class CobaltStrikeWebSocketStreamManager:
                 beacon_id=normalized_bid,
                 task_id=_task_id(task_result),
                 status="failed",
-                details={"output_source": "websocket"},
+                details={"output_source": "task_result"},
             )
             return {
                 "bid": normalized_bid,
@@ -591,59 +536,39 @@ class CobaltStrikeWebSocketStreamManager:
                 "wait_profile": wait_profile,
                 "stream_ready_before_submit": stream_ready,
                 "output": [],
-                "output_source": "websocket",
-                "output_correlation": "best_effort",
+                "output_source": "task_result",
+                "output_correlation": "unavailable",
                 "timed_out": False,
                 "task_completed": False,
+                "task_terminal": False,
+                "task_status": None,
+                "task_errors": [],
+                "output_empty": False,
+                "output_partial": False,
                 "output_complete": False,
             }
 
-        task_detail = await self._wait_for_task_terminal(
+        task_detail = await self._wait_for_task_result(
             task_result=task_result,
             timeout_seconds=effective_timeout_seconds,
         )
-        task_completed = _task_is_terminal(task_detail.get("task"))
-        remaining = max(0.1, task_detail.get("remaining_seconds", 0.1))
-
-        # The REST task can become terminal slightly before the final console
-        # frame reaches the websocket subscriber. Drain briefly after completion.
-        output_result = await asyncio.to_thread(
-            buffer.wait_for_quiet_result,
-            cursor,
-            min(max(quiet_seconds, 0.1) + 1.0, remaining if not task_completed else max(quiet_seconds, 0.1) + 1.0),
-            quiet_seconds,
+        websocket_result = buffer.result_since(cursor)
+        result = _build_console_wait_result(
+            bid=normalized_bid,
+            command_line=command_line,
+            task_result=task_result,
+            task_detail=task_detail,
+            wait_profile=wait_profile,
+            task_submitted=True,
+            stream_ready_before_submit=stream_ready,
+            websocket_result=websocket_result,
         )
-        result = {
-            "bid": normalized_bid,
-            "command_line": command_line,
-            "task": task_result,
-            "task_id": _task_id(task_result),
-            "task_status_path": _task_status_path(task_result),
-            "task_detail": task_detail.get("task"),
-            "wait_profile": wait_profile,
-            "stream_ready_before_submit": stream_ready,
-            "output": output_result["entries"],
-            "output_source": "websocket",
-            "output_correlation": "best_effort",
-            "output_buffer": {
-                "after_sequence": output_result["after_sequence"],
-                "first_retained_sequence": output_result["first_retained_sequence"],
-                "last_sequence": output_result["last_sequence"],
-                "truncated": output_result["truncated"],
-                "dropped_entries": output_result["dropped_entries"],
-            },
-            "timed_out": task_detail.get("timed_out", False),
-            "task_completed": task_completed,
-            "output_complete": task_completed and not task_detail.get("timed_out", False),
-        }
-        if result["output"]:
-            mark_untrusted_content(result, ["output"])
         audit_event(
             "tool_invocation",
             tool_name="executeBeaconConsoleAndWait",
             beacon_id=normalized_bid,
             task_id=result.get("task_id"),
-            status="completed" if task_completed else "timed_out",
+            status=_audit_status_from_wait_result(result),
             details={
                 "output_source": result.get("output_source"),
                 "output_complete": result.get("output_complete"),
@@ -669,7 +594,7 @@ class CobaltStrikeWebSocketStreamManager:
                 beacon_id=bid,
                 task_id=_task_id(task_result),
                 status="failed",
-                details={"output_source": "rest_task_poll"},
+                details={"output_source": "task_result"},
             )
             return {
                 "bid": bid,
@@ -680,42 +605,36 @@ class CobaltStrikeWebSocketStreamManager:
                 "wait_profile": wait_profile,
                 "task_submitted": False,
                 "output": [],
-                "output_source": "rest_task_poll",
+                "output_source": "task_result",
                 "output_correlation": "unavailable",
                 "output_complete": False,
-                "output_unavailable_reason": self._unavailable_message(),
                 "timed_out": False,
                 "task_completed": False,
+                "task_terminal": False,
+                "task_status": None,
+                "task_errors": [],
+                "output_empty": False,
+                "output_partial": False,
             }
 
-        task_detail = await self._wait_for_task_terminal(
+        task_detail = await self._wait_for_task_result(
             task_result=task_result,
             timeout_seconds=effective_timeout_seconds,
         )
-        task_completed = _task_is_terminal(task_detail.get("task"))
-        result = {
-            "bid": bid,
-            "command_line": command_line,
-            "task": task_result,
-            "task_id": _task_id(task_result),
-            "task_status_path": _task_status_path(task_result),
-            "task_detail": task_detail.get("task"),
-            "wait_profile": wait_profile,
-            "task_submitted": True,
-            "output": [],
-            "output_source": "rest_task_poll",
-            "output_correlation": "unavailable",
-            "output_complete": False,
-            "output_unavailable_reason": self._unavailable_message(),
-            "timed_out": task_detail.get("timed_out", False),
-            "task_completed": task_completed,
-        }
+        result = _build_console_wait_result(
+            bid=bid,
+            command_line=command_line,
+            task_result=task_result,
+            task_detail=task_detail,
+            wait_profile=wait_profile,
+            task_submitted=True,
+        )
         audit_event(
             "tool_invocation",
             tool_name="executeBeaconConsoleAndWait",
             beacon_id=bid,
             task_id=result.get("task_id"),
-            status="completed" if task_completed else "timed_out",
+            status=_audit_status_from_wait_result(result),
             details={"output_source": result.get("output_source")},
         )
         return result
@@ -850,43 +769,7 @@ class CobaltStrikeWebSocketStreamManager:
         logger.debug("Failed to fetch beacon list while resolving %s: %s", bid, beacon_list.get("error"))
         return None
 
-    async def _wait_for_console_result(
-        self,
-        *,
-        buffer: StreamBuffer,
-        cursor: int,
-        timeout_seconds: float,
-        quiet_seconds: float,
-    ) -> list[dict[str, Any]]:
-        deadline = time.monotonic() + max(0.1, timeout_seconds)
-        last_entries: list[dict[str, Any]] = []
-
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return last_entries
-
-            output_result = await asyncio.to_thread(
-                buffer.wait_for_quiet_result,
-                cursor,
-                remaining,
-                quiet_seconds,
-            )
-            entries = output_result["entries"]
-            last_entries = entries
-            if any(_is_substantive_console_output(entry.get("data", "")) for entry in entries):
-                return entries
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return entries
-            await asyncio.to_thread(
-                buffer.wait_for_entries,
-                output_result["last_sequence"],
-                min(remaining, 0.5),
-            )
-
-    async def _wait_for_task_terminal(
+    async def _wait_for_task_result(
         self,
         *,
         task_result: dict[str, Any] | None,
@@ -899,11 +782,17 @@ class CobaltStrikeWebSocketStreamManager:
                 "task": task_result,
                 "timed_out": False,
                 "remaining_seconds": timeout_seconds,
+                "latest_result": _task_output_items(task_result, "result"),
+                "latest_error": _task_output_items(task_result, "error"),
+                "task_terminal": _task_is_terminal(task_result),
+                "task_status": _task_status(task_result),
                 "note": "Task status URL was not present in command response",
             }
 
         deadline = time.monotonic() + max(0.1, timeout_seconds)
         last_task: dict[str, Any] | None = task_result
+        latest_result = _task_output_items(task_result, "result")
+        latest_error = _task_output_items(task_result, "error")
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -911,17 +800,35 @@ class CobaltStrikeWebSocketStreamManager:
                     "task": last_task,
                     "timed_out": True,
                     "remaining_seconds": 0.0,
+                    "latest_result": latest_result,
+                    "latest_error": latest_error,
+                    "task_terminal": _task_is_terminal(last_task),
+                    "task_status": _task_status(last_task),
                 }
 
-            result = await self.cs_client.request_json("GET", task_path)
+            result = await self.cs_client.request_json(
+                "GET",
+                task_path,
+                params={"format": "structured"},
+            )
             if result.get("ok") and isinstance(result.get("data"), dict):
                 data = result["data"]
                 last_task = data
+                data_result = _task_output_items(data, "result")
+                data_error = _task_output_items(data, "error")
+                if data_result:
+                    latest_result = data_result
+                if data_error:
+                    latest_error = data_error
                 if _task_is_terminal(data):
                     return {
                         "task": data,
                         "timed_out": False,
                         "remaining_seconds": max(0.0, deadline - time.monotonic()),
+                        "latest_result": latest_result,
+                        "latest_error": latest_error,
+                        "task_terminal": True,
+                        "task_status": _task_status(data),
                     }
             elif not result.get("ok"):
                 last_task = {
@@ -961,7 +868,136 @@ def _is_substantive_console_output(data: Any) -> bool:
         return False
     if lower_text.startswith("[*] tasked beacon"):
         return False
+    if "host called home" in lower_text and "sent:" in lower_text:
+        return False
     return True
+
+
+def _build_console_wait_result(
+    *,
+    bid: str,
+    command_line: str,
+    task_result: dict[str, Any] | None,
+    task_detail: dict[str, Any],
+    wait_profile: dict[str, Any],
+    task_submitted: bool,
+    stream_ready_before_submit: bool | None = None,
+    websocket_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    task = task_detail.get("task")
+    task_status = task_detail.get("task_status") or _task_status(task)
+    task_terminal = bool(task_detail.get("task_terminal", _task_is_terminal(task)))
+    task_completed = task_status == "COMPLETED"
+    timed_out = bool(task_detail.get("timed_out", False))
+    output = list(task_detail.get("latest_result") or [])
+    task_errors = list(task_detail.get("latest_error") or [])
+    output_empty = task_completed and not output and not task_errors
+    output_partial = timed_out and bool(output)
+    terminal_failure = task_terminal and not task_completed
+    output_complete = task_completed or (terminal_failure and bool(task_errors))
+
+    result: dict[str, Any] = {
+        "bid": bid,
+        "command_line": command_line,
+        "task": task_result,
+        "task_id": _task_id(task_result) or _task_id(task),
+        "task_status_path": _task_status_path(task_result),
+        "task_detail": task,
+        "wait_profile": wait_profile,
+        "task_submitted": task_submitted,
+        "task_terminal": task_terminal,
+        "task_status": task_status or None,
+        "task_completed": task_completed,
+        "task_errors": task_errors,
+        "output": output,
+        "output_source": "task_result",
+        "output_correlation": "authoritative",
+        "output_complete": output_complete,
+        "output_empty": output_empty,
+        "output_partial": output_partial,
+        "timed_out": timed_out,
+    }
+
+    unavailable_reason = _output_unavailable_reason(
+        task_status=task_status,
+        task_completed=task_completed,
+        task_terminal=task_terminal,
+        timed_out=timed_out,
+        output=output,
+        task_errors=task_errors,
+        note=task_detail.get("note"),
+    )
+    if unavailable_reason:
+        result["output_unavailable_reason"] = unavailable_reason
+
+    if stream_ready_before_submit is not None:
+        result["stream_ready_before_submit"] = stream_ready_before_submit
+
+    if websocket_result is not None:
+        websocket_output = _filtered_websocket_entries(websocket_result.get("entries", []))
+        if websocket_output:
+            result["websocket_output"] = websocket_output
+            result["websocket_output_source"] = "diagnostic"
+            result["websocket_output_buffer"] = {
+                "after_sequence": websocket_result.get("after_sequence"),
+                "first_retained_sequence": websocket_result.get("first_retained_sequence"),
+                "last_sequence": websocket_result.get("last_sequence"),
+                "truncated": websocket_result.get("truncated"),
+                "dropped_entries": websocket_result.get("dropped_entries"),
+            }
+
+    untrusted_fields = []
+    if output:
+        untrusted_fields.append("output")
+    if task_errors:
+        untrusted_fields.append("task_errors")
+    if result.get("websocket_output"):
+        untrusted_fields.append("websocket_output")
+    if untrusted_fields:
+        mark_untrusted_content(result, untrusted_fields)
+    return result
+
+
+def _output_unavailable_reason(
+    *,
+    task_status: str,
+    task_completed: bool,
+    task_terminal: bool,
+    timed_out: bool,
+    output: list[Any],
+    task_errors: list[Any],
+    note: Any,
+) -> str | None:
+    if output or task_errors:
+        return None
+    if isinstance(note, str) and note:
+        return note
+    if task_completed:
+        return "task completed with no output"
+    if timed_out:
+        return "task result was not available before timeout"
+    if task_terminal:
+        rendered_status = task_status or "UNKNOWN"
+        return f"task ended with status {rendered_status} without error output"
+    return None
+
+
+def _filtered_websocket_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        entry
+        for entry in entries
+        if _is_substantive_console_output(entry.get("data", ""))
+    ]
+
+
+def _audit_status_from_wait_result(result: dict[str, Any]) -> str:
+    if result.get("timed_out"):
+        return "timed_out"
+    if result.get("task_completed"):
+        return "completed"
+    if result.get("task_terminal"):
+        return "failed"
+    return "timed_out"
 
 
 def _task_status_path(task_result: dict[str, Any] | None) -> str | None:
@@ -982,10 +1018,25 @@ def _task_id(task_result: dict[str, Any] | None) -> Any:
     return task_result.get("taskId") or task_result.get("id")
 
 
-def _task_is_terminal(task: dict[str, Any] | None) -> bool:
+def _task_status(task: dict[str, Any] | None) -> str:
     if not isinstance(task, dict):
-        return False
-    status = str(task.get("taskStatus") or task.get("status") or "").upper()
+        return ""
+    return str(task.get("taskStatus") or task.get("status") or "").upper()
+
+
+def _task_output_items(task: dict[str, Any] | None, key: str) -> list[Any]:
+    if not isinstance(task, dict):
+        return []
+    value = task.get(key)
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _task_is_terminal(task: dict[str, Any] | None) -> bool:
+    status = _task_status(task)
     if status in TASK_TERMINAL_STATUSES:
         return True
     if status and status not in TASK_IN_PROGRESS_STATUSES:
@@ -1123,14 +1174,12 @@ def add_cobalt_strike_stream_tools(
         bid: str,
         command_line: str,
         timeout_seconds: float = 60.0,
-        quiet_seconds: float = 1.0,
     ) -> str:
-        """Execute a beacon console command and return untrusted streamed output."""
+        """Execute a beacon console command and return untrusted task-result output."""
         result = await stream_manager.execute_console_and_wait(
             bid=bid,
             command_line=command_line,
             timeout_seconds=timeout_seconds,
-            quiet_seconds=quiet_seconds,
         )
         return json.dumps(result, indent=2)
 

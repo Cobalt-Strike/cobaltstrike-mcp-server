@@ -833,6 +833,8 @@ class StreamParsingTests(unittest.TestCase):
         self.assertEqual(_task_status_path({"taskId": "abc"}), "/api/v1/tasks/abc")
         self.assertTrue(_task_is_terminal({"status": "COMPLETED"}))
         self.assertFalse(_task_is_terminal({"status": "RUNNING"}))
+        self.assertFalse(_task_is_terminal({"taskStatus": "OUTPUT_RECEIVED"}))
+        self.assertTrue(_task_is_terminal({"taskStatus": "NOT_FOUND"}))
 
     def test_stream_buffer_reports_gaps(self) -> None:
         buffer = StreamBuffer(maxlen=3)
@@ -934,7 +936,9 @@ class StreamFallbackTests(unittest.IsolatedAsyncioTestCase):
                     "ok": True,
                     "data": {
                         "taskId": "task-1",
-                        "status": "COMPLETED",
+                        "taskStatus": "COMPLETED",
+                        "result": [{"text": "task output"}],
+                        "error": [],
                     },
                 },
             ]
@@ -945,14 +949,17 @@ class StreamFallbackTests(unittest.IsolatedAsyncioTestCase):
             bid="abc123",
             command_line="pwd",
             timeout_seconds=1.0,
-            quiet_seconds=0.1,
         )
 
         self.assertTrue(result["task_completed"])
-        self.assertEqual(result["output_source"], "rest_task_poll")
-        self.assertEqual(result["output"], [])
-        self.assertIn("disabled", result["output_unavailable_reason"])
-        self.assertNotIn("content_is_untrusted", result)
+        self.assertTrue(result["task_terminal"])
+        self.assertEqual(result["task_status"], "COMPLETED")
+        self.assertEqual(result["output_source"], "task_result")
+        self.assertEqual(result["output_correlation"], "authoritative")
+        self.assertEqual(result["output"], [{"text": "task output"}])
+        self.assertTrue(result["output_complete"])
+        self.assertEqual(result["untrusted_content_fields"], ["output"])
+        self.assertTrue(result["content_is_untrusted"])
         self.assertEqual(
             cs_client.requests,
             [
@@ -961,6 +968,7 @@ class StreamFallbackTests(unittest.IsolatedAsyncioTestCase):
                 ("GET", "/api/v1/tasks/task-1"),
             ],
         )
+        self.assertEqual(cs_client.request_kwargs[2], {"params": {"format": "structured"}})
 
     def test_disabled_manager_reports_stream_tools_unavailable(self) -> None:
         manager = CobaltStrikeWebSocketStreamManager(_FakeCobaltStrikeClient([]), enabled=False)
@@ -983,31 +991,265 @@ class StreamFallbackTests(unittest.IsolatedAsyncioTestCase):
             }
 
         async def execute_command(bid: str, command_line: str) -> dict:
-            manager._beacon_buffer(bid).append("target output")  # pylint: disable=protected-access
-            return {"taskId": "task-1", "status": "COMPLETED"}
+            manager._beacon_buffer(bid).append("target websocket output")  # pylint: disable=protected-access
+            return {"taskId": "task-1", "statusUrl": "/api/v1/tasks/task-1", "status": "RUNNING"}
 
-        async def wait_for_task_terminal(*, task_result: dict, timeout_seconds: float) -> dict:
+        async def wait_for_task_result(*, task_result: dict, timeout_seconds: float) -> dict:
             return {
-                "task": {"taskId": "task-1", "status": "COMPLETED"},
+                "task": {
+                    "taskId": "task-1",
+                    "taskStatus": "COMPLETED",
+                    "result": [{"text": "authoritative task output"}],
+                    "error": [],
+                },
                 "timed_out": False,
                 "remaining_seconds": timeout_seconds,
+                "latest_result": [{"text": "authoritative task output"}],
+                "latest_error": [],
+                "task_terminal": True,
+                "task_status": "COMPLETED",
             }
 
         with patch.object(manager, "_streams_available", return_value=True):
             with patch.object(manager, "ensure_beaconlog_stream", return_value=_ReadyStream()):
                 with patch.object(manager, "_build_wait_profile", build_wait_profile):
                     with patch.object(manager, "_execute_console_command", execute_command):
-                        with patch.object(manager, "_wait_for_task_terminal", wait_for_task_terminal):
+                        with patch.object(manager, "_wait_for_task_result", wait_for_task_result):
                             result = await manager.execute_console_and_wait(
                                 bid="abc123",
                                 command_line="pwd",
                                 timeout_seconds=1.0,
-                                quiet_seconds=0.0,
                             )
 
-        self.assertEqual(result["output"][0]["data"], "target output")
-        self.assertEqual(result["untrusted_content_fields"], ["output"])
+        self.assertEqual(result["output"], [{"text": "authoritative task output"}])
+        self.assertEqual(result["output_source"], "task_result")
+        self.assertEqual(result["websocket_output_source"], "diagnostic")
+        self.assertEqual(result["websocket_output"][0]["data"], "target websocket output")
+        self.assertEqual(result["untrusted_content_fields"], ["output", "websocket_output"])
         self.assertTrue(result["content_is_untrusted"])
+
+    async def test_wait_for_task_result_continues_from_output_received_to_completed(self) -> None:
+        cs_client = _FakeCobaltStrikeClient(
+            [
+                {
+                    "ok": True,
+                    "data": {
+                        "taskId": "task-1",
+                        "taskStatus": "OUTPUT_RECEIVED",
+                        "result": [{"text": "partial"}],
+                        "error": [],
+                    },
+                },
+                {
+                    "ok": True,
+                    "data": {
+                        "taskId": "task-1",
+                        "taskStatus": "COMPLETED",
+                        "result": [{"text": "final"}],
+                        "error": [],
+                    },
+                },
+            ]
+        )
+        manager = CobaltStrikeWebSocketStreamManager(cs_client, enabled=False)
+
+        result = await manager._wait_for_task_result(  # pylint: disable=protected-access
+            task_result={"taskId": "task-1"},
+            timeout_seconds=1.0,
+            poll_seconds=0.0,
+        )
+
+        self.assertFalse(result["timed_out"])
+        self.assertTrue(result["task_terminal"])
+        self.assertEqual(result["task_status"], "COMPLETED")
+        self.assertEqual(result["latest_result"], [{"text": "final"}])
+        self.assertEqual(
+            cs_client.requests,
+            [
+                ("GET", "/api/v1/tasks/task-1"),
+                ("GET", "/api/v1/tasks/task-1"),
+            ],
+        )
+        self.assertEqual(cs_client.request_kwargs[0], {"params": {"format": "structured"}})
+
+    async def test_execute_console_and_wait_completed_empty_result(self) -> None:
+        cs_client = _FakeCobaltStrikeClient(
+            [
+                {"ok": True, "data": {"bid": "abc123", "sleep": {"sleep": 0, "jitter": 0}}},
+                {
+                    "ok": True,
+                    "data": {
+                        "taskId": "task-1",
+                        "statusUrl": "/api/v1/tasks/task-1",
+                        "status": "RUNNING",
+                    },
+                },
+                {
+                    "ok": True,
+                    "data": {
+                        "taskId": "task-1",
+                        "taskStatus": "COMPLETED",
+                        "result": [],
+                        "error": [],
+                    },
+                },
+            ]
+        )
+        manager = CobaltStrikeWebSocketStreamManager(cs_client, enabled=False)
+
+        result = await manager.execute_console_and_wait(
+            bid="abc123",
+            command_line="pwd",
+            timeout_seconds=1.0,
+        )
+
+        self.assertTrue(result["output_complete"])
+        self.assertTrue(result["output_empty"])
+        self.assertEqual(result["output"], [])
+        self.assertEqual(result["task_errors"], [])
+        self.assertEqual(result["output_unavailable_reason"], "task completed with no output")
+        self.assertNotIn("content_is_untrusted", result)
+
+    async def test_execute_console_and_wait_timeout_after_output_received_returns_partial(self) -> None:
+        cs_client = _FakeCobaltStrikeClient(
+            [
+                {"ok": True, "data": {"bid": "abc123", "sleep": {"sleep": 0, "jitter": 0}}},
+                {
+                    "ok": True,
+                    "data": {
+                        "taskId": "task-1",
+                        "statusUrl": "/api/v1/tasks/task-1",
+                        "status": "RUNNING",
+                    },
+                },
+            ]
+        )
+        manager = CobaltStrikeWebSocketStreamManager(cs_client, enabled=False)
+
+        async def wait_for_task_result(*, task_result: dict, timeout_seconds: float) -> dict:
+            return {
+                "task": {
+                    "taskId": "task-1",
+                    "taskStatus": "OUTPUT_RECEIVED",
+                    "result": [{"text": "partial"}],
+                    "error": [],
+                },
+                "timed_out": True,
+                "remaining_seconds": 0.0,
+                "latest_result": [{"text": "partial"}],
+                "latest_error": [],
+                "task_terminal": False,
+                "task_status": "OUTPUT_RECEIVED",
+            }
+
+        with patch.object(manager, "_wait_for_task_result", wait_for_task_result):
+            result = await manager.execute_console_and_wait(
+                bid="abc123",
+                command_line="pwd",
+                timeout_seconds=1.0,
+            )
+
+        self.assertTrue(result["timed_out"])
+        self.assertTrue(result["output_partial"])
+        self.assertFalse(result["output_complete"])
+        self.assertEqual(result["task_status"], "OUTPUT_RECEIVED")
+        self.assertEqual(result["output"], [{"text": "partial"}])
+
+    async def test_execute_console_and_wait_failed_task_returns_errors(self) -> None:
+        cs_client = _FakeCobaltStrikeClient(
+            [
+                {"ok": True, "data": {"bid": "abc123", "sleep": {"sleep": 0, "jitter": 0}}},
+                {
+                    "ok": True,
+                    "data": {
+                        "taskId": "task-1",
+                        "statusUrl": "/api/v1/tasks/task-1",
+                        "status": "RUNNING",
+                    },
+                },
+            ]
+        )
+        manager = CobaltStrikeWebSocketStreamManager(cs_client, enabled=False)
+
+        async def wait_for_task_result(*, task_result: dict, timeout_seconds: float) -> dict:
+            return {
+                "task": {
+                    "taskId": "task-1",
+                    "taskStatus": "FAILED",
+                    "result": [],
+                    "error": [{"message": "command failed"}],
+                },
+                "timed_out": False,
+                "remaining_seconds": timeout_seconds,
+                "latest_result": [],
+                "latest_error": [{"message": "command failed"}],
+                "task_terminal": True,
+                "task_status": "FAILED",
+            }
+
+        with patch.object(manager, "_wait_for_task_result", wait_for_task_result):
+            result = await manager.execute_console_and_wait(
+                bid="abc123",
+                command_line="pwd",
+                timeout_seconds=1.0,
+            )
+
+        self.assertFalse(result["task_completed"])
+        self.assertTrue(result["task_terminal"])
+        self.assertTrue(result["output_complete"])
+        self.assertEqual(result["task_status"], "FAILED")
+        self.assertEqual(result["task_errors"], [{"message": "command failed"}])
+        self.assertEqual(result["untrusted_content_fields"], ["task_errors"])
+
+    async def test_execute_console_and_wait_ignores_websocket_noise_as_output(self) -> None:
+        class _ReadyStream:
+            def wait_until_ready(self, timeout_seconds: float) -> bool:
+                return True
+
+        manager = CobaltStrikeWebSocketStreamManager(_FakeCobaltStrikeClient([]), enabled=True)
+
+        async def build_wait_profile(bid: str, requested_timeout_seconds: float) -> dict:
+            return {
+                "requested_timeout_seconds": requested_timeout_seconds,
+                "effective_timeout_seconds": requested_timeout_seconds,
+            }
+
+        async def execute_command(bid: str, command_line: str) -> dict:
+            manager._beacon_buffer(bid).append("host called home, sent: 123 bytes")  # pylint: disable=protected-access
+            return {"taskId": "task-1", "statusUrl": "/api/v1/tasks/task-1", "status": "RUNNING"}
+
+        async def wait_for_task_result(*, task_result: dict, timeout_seconds: float) -> dict:
+            return {
+                "task": {
+                    "taskId": "task-1",
+                    "taskStatus": "COMPLETED",
+                    "result": [],
+                    "error": [],
+                },
+                "timed_out": False,
+                "remaining_seconds": timeout_seconds,
+                "latest_result": [],
+                "latest_error": [],
+                "task_terminal": True,
+                "task_status": "COMPLETED",
+            }
+
+        with patch.object(manager, "_streams_available", return_value=True):
+            with patch.object(manager, "ensure_beaconlog_stream", return_value=_ReadyStream()):
+                with patch.object(manager, "_build_wait_profile", build_wait_profile):
+                    with patch.object(manager, "_execute_console_command", execute_command):
+                        with patch.object(manager, "_wait_for_task_result", wait_for_task_result):
+                            result = await manager.execute_console_and_wait(
+                                bid="abc123",
+                                command_line="pwd",
+                                timeout_seconds=1.0,
+                            )
+
+        self.assertTrue(result["output_complete"])
+        self.assertTrue(result["output_empty"])
+        self.assertEqual(result["output"], [])
+        self.assertNotIn("websocket_output", result)
+        self.assertNotIn("content_is_untrusted", result)
 
 
 class HttpHelperTests(unittest.IsolatedAsyncioTestCase):
@@ -1183,7 +1425,7 @@ class AuditTests(unittest.TestCase):
                     beacon_id="abc123",
                     task_id="task-1",
                     status="completed",
-                    details={"output_source": "rest_task_poll"},
+                    details={"output_source": "task_result"},
                 )
         rendered = "\n".join(captured.output)
         self.assertIn("operator-1", rendered)
