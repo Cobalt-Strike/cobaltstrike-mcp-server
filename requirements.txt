@@ -1,7 +1,7 @@
 # Cobalt Strike MCP Server Dependencies
 
 # Core MCP and FastMCP framework
-fastmcp==3.3.1
+fastmcp==3.4.3
 
 # HTTP client for Cobalt Strike API communication
 httpx==0.28.1
