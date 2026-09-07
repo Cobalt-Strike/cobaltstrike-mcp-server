@@ -1072,6 +1072,42 @@ class StreamFallbackTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(cs_client.request_kwargs[0], {"params": {"format": "structured"}})
 
+    async def test_wait_for_task_result_settles_terminal_empty_before_returning(self) -> None:
+        cs_client = _FakeCobaltStrikeClient(
+            [
+                {
+                    "ok": True,
+                    "data": {
+                        "taskId": "task-1",
+                        "taskStatus": "COMPLETED",
+                        "result": [],
+                        "error": [],
+                    },
+                },
+                {
+                    "ok": True,
+                    "data": {
+                        "taskId": "task-1",
+                        "taskStatus": "COMPLETED",
+                        "result": [{"text": "late terminal output"}],
+                        "error": [],
+                    },
+                },
+            ]
+        )
+        manager = CobaltStrikeWebSocketStreamManager(cs_client, enabled=False)
+
+        result = await manager._wait_for_task_result(  # pylint: disable=protected-access
+            task_result={"taskId": "task-1"},
+            timeout_seconds=1.0,
+            poll_seconds=0.0,
+        )
+
+        self.assertFalse(result["timed_out"])
+        self.assertTrue(result["output_settled"])
+        self.assertEqual(result["latest_result"], [{"text": "late terminal output"}])
+        self.assertEqual(len(cs_client.requests), 2)
+
     async def test_execute_console_and_wait_completed_empty_result(self) -> None:
         cs_client = _FakeCobaltStrikeClient(
             [
@@ -1082,6 +1118,15 @@ class StreamFallbackTests(unittest.IsolatedAsyncioTestCase):
                         "taskId": "task-1",
                         "statusUrl": "/api/v1/tasks/task-1",
                         "status": "RUNNING",
+                    },
+                },
+                {
+                    "ok": True,
+                    "data": {
+                        "taskId": "task-1",
+                        "taskStatus": "COMPLETED",
+                        "result": [],
+                        "error": [],
                     },
                 },
                 {
@@ -1105,9 +1150,10 @@ class StreamFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["output_complete"])
         self.assertTrue(result["output_empty"])
+        self.assertTrue(result["output_settled"])
         self.assertEqual(result["output"], [])
         self.assertEqual(result["task_errors"], [])
-        self.assertEqual(result["output_unavailable_reason"], "task completed with no output")
+        self.assertNotIn("output_unavailable_reason", result)
         self.assertNotIn("content_is_untrusted", result)
 
     async def test_execute_console_and_wait_timeout_after_output_received_returns_partial(self) -> None:
@@ -1245,8 +1291,9 @@ class StreamFallbackTests(unittest.IsolatedAsyncioTestCase):
                                 timeout_seconds=1.0,
                             )
 
-        self.assertTrue(result["output_complete"])
-        self.assertTrue(result["output_empty"])
+        self.assertFalse(result["output_complete"])
+        self.assertFalse(result["output_empty"])
+        self.assertFalse(result["output_settled"])
         self.assertEqual(result["output"], [])
         self.assertNotIn("websocket_output", result)
         self.assertNotIn("content_is_untrusted", result)

@@ -1,13 +1,17 @@
 {
   "mcpServers": {
     "cobalt-strike-dev": {
-      "command": "python",
+      "command": "uv",
       "args": [
+        "--directory",
+        "/home/user/cobaltstrike-mcp-server",
+        "run",
+        "--locked",
+        "python",
         "cs_mcp.py",
         "--insecure",
         "--log-level", "DEBUG"
       ],
-      "cwd": "/home/user/cs-mcp",
       "env": {
         "CS_API_USERNAME": "dev_user",
         "CS_API_PASSWORD": "dev_password",

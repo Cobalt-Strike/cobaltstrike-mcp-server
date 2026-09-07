@@ -1,14 +1,18 @@
 {
   "mcpServers": {
     "cobalt-strike-prod": {
-      "command": "python",
+      "command": "uv",
       "args": [
+        "--directory",
+        "/opt/cobaltstrike-mcp-server",
+        "run",
+        "--locked",
+        "python",
         "cs_mcp.py",
         "--base-url", "https://teamserver.company.com:50443",
         "--verify-tls",
         "--transport", "streamable-http"
       ],
-      "cwd": "/opt/cs-mcp",
       "env": {
         "CS_API_USERNAME": "prod_user",
         "CS_API_PASSWORD": "secure_password",

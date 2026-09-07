@@ -1,8 +1,13 @@
 {
   "mcpServers": {
     "cobalt-strike": {
-      "command": "python",
+      "command": "uv",
       "args": [
+        "--directory",
+        "/path/to/cobaltstrike-mcp-server",
+        "run",
+        "--locked",
+        "python",
         "cs_mcp.py",
         "--insecure",
         "--listen-host", "127.0.0.1",
@@ -10,7 +15,6 @@
         "--server-name", "Cobalt Strike API",
         "--instructions", "This server provides access to Cobalt Strike REST API endpoints for red team operations. Available tools include beacon management (list, remove, execute commands), payload generation, listener management, and file operations. Always verify target authorization before operations."
       ],
-      "cwd": "/path/to/cs-mcp",
       "env": {
         "CS_API_USERNAME": "your_cs_username",
         "CS_API_PASSWORD": "your_cs_password",

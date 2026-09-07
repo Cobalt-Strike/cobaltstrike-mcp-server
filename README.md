@@ -17,7 +17,6 @@ This MCP server provides a bridge between large language models like Claude and 
 
 - **Python 3.10+** installed
 - **uv** installed for dependency management
-- FastMCP 2.12.5 or higher 
 - The Cobalt Strike API Server should be running.
 - Cobalt Strike should be installed and configured.
 - Cobalt Strike should be properly licensed
@@ -34,39 +33,13 @@ This MCP server provides a bridge between large language models like Claude and 
 2. **Create the uv-managed environment**
 
     ```powershell
-    uv sync
+    uv sync --locked
     ```
 
 3. **Verify Installation**
 
     ```powershell
-    uv run python cs_mcp.py --help
-    ```
-
-#### Alternative: Manual virtual environment
-
-- **Windows**:
-    ```cmd
-    setup.bat
-    venv\Scripts\activate
-    ```
-
-- **macOS/Linux**:
-    ```bash
-    setup.sh
-    source venv/bin/activate
-    ```
-
-Install dependencies:
-
-    ```powershell
-    pip install -r requirements.txt
-    ```
-
-Verify installation:
-
-    ```bash
-    python cs_mcp.py --help
+    uv run --locked python cs_mcp.py --help
     ```
 
 ### Configuration
@@ -121,7 +94,7 @@ The server automatically loads environment variables from a `.env` file in the c
 
 3. **Run without command line arguments**:
    ```bash
-   python cs_mcp.py
+   uv run --locked python cs_mcp.py
    ```
 
 #### Viewing Environment Variables
@@ -129,7 +102,7 @@ The server automatically loads environment variables from a `.env` file in the c
 Use the `--show-env` option to see all supported environment variables and their current values:
 
 ```bash
-python cs_mcp.py --show-env
+uv run --locked python cs_mcp.py --show-env
 ```
 
 This displays:
@@ -181,7 +154,7 @@ The MCP Server can be run standalone from the command line.
 # Start the MCP server with credentials from the environment
 export CS_API_USERNAME="your_username"
 export CS_API_PASSWORD="your_password"
-uv run python cs_mcp.py --insecure
+uv run --locked python cs_mcp.py --insecure
 ```
 
 #### Using Environment Variables
@@ -193,7 +166,7 @@ export CS_API_PASSWORD="CobaltStrikePassword"
 export CS_API_VERIFY_TLS="false"
 
 # Run with minimal command line arguments
-uv run python cs_mcp.py
+uv run --locked python cs_mcp.py
 ```
 
 #### Using .env File
@@ -204,7 +177,7 @@ cp .env.example .env
 # Edit .env with your credentials
 
 # Run
-uv run python cs_mcp.py --transport stdio
+uv run --locked python cs_mcp.py --transport stdio
 ```
 ## Available Tools
 
@@ -280,7 +253,7 @@ The server exposes static Cobalt Strike data through [MCP resources](https://git
 
 1. **Copy the configuration example**:
    ```bash
-   cp claude_desktop_config_example.json ~/.config/claude-desktop/claude_desktop_config.json
+   cp examples/claude_desktop_config/claude_desktop_config_example.json ~/.config/claude-desktop/claude_desktop_config.json
    ```
 
 2. **Edit the configuration**:
@@ -297,6 +270,7 @@ The server exposes static Cobalt Strike data through [MCP resources](https://git
                         "--directory",
                         "<PROJECT LOCATION>",
                         "run",
+                        "--locked",
                         "python",
                         "cs_mcp.py"
                     ],
@@ -345,8 +319,8 @@ The server exposes static Cobalt Strike data through [MCP resources](https://git
    ```
    ModuleNotFoundError: No module named 'fastmcp'
    ```
-   - Ensure virtual environment is activated
-   - Run `pip install -r requirements.txt`
+   - Run `uv sync --locked` from the repository root
+   - Retry with `uv run --locked python cs_mcp.py --help`
 
 ## Support
 

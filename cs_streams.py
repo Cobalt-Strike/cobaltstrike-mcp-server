@@ -51,6 +51,7 @@ DEFAULT_SLEEP_WAIT_MARGIN_SECONDS = 30.0
 DEFAULT_SLEEP_WAIT_CYCLES = 2.0
 LONG_SLEEP_NOTICE_THRESHOLD_SECONDS = 60.0
 STREAM_READY_WAIT_SECONDS = 3.0
+TERMINAL_EMPTY_SETTLE_POLLS = 2
 MAX_STREAM_BUFFER_SIZE = 10_000
 BEACON_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
@@ -778,14 +779,17 @@ class CobaltStrikeWebSocketStreamManager:
     ) -> dict[str, Any]:
         task_path = _task_status_path(task_result)
         if not task_path:
+            latest_result = _task_output_items(task_result, "result")
+            latest_error = _task_output_items(task_result, "error")
             return {
                 "task": task_result,
                 "timed_out": False,
                 "remaining_seconds": timeout_seconds,
-                "latest_result": _task_output_items(task_result, "result"),
-                "latest_error": _task_output_items(task_result, "error"),
+                "latest_result": latest_result,
+                "latest_error": latest_error,
                 "task_terminal": _task_is_terminal(task_result),
                 "task_status": _task_status(task_result),
+                "output_settled": bool(latest_result or latest_error),
                 "note": "Task status URL was not present in command response",
             }
 
@@ -793,6 +797,7 @@ class CobaltStrikeWebSocketStreamManager:
         last_task: dict[str, Any] | None = task_result
         latest_result = _task_output_items(task_result, "result")
         latest_error = _task_output_items(task_result, "error")
+        terminal_empty_observations = 0
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -804,6 +809,7 @@ class CobaltStrikeWebSocketStreamManager:
                     "latest_error": latest_error,
                     "task_terminal": _task_is_terminal(last_task),
                     "task_status": _task_status(last_task),
+                    "output_settled": False,
                 }
 
             result = await self.cs_client.request_json(
@@ -820,7 +826,11 @@ class CobaltStrikeWebSocketStreamManager:
                     latest_result = data_result
                 if data_error:
                     latest_error = data_error
-                if _task_is_terminal(data):
+                if _task_is_terminal(data) and (
+                    latest_result
+                    or latest_error
+                    or _task_status(data) != "COMPLETED"
+                ):
                     return {
                         "task": data,
                         "timed_out": False,
@@ -829,7 +839,22 @@ class CobaltStrikeWebSocketStreamManager:
                         "latest_error": latest_error,
                         "task_terminal": True,
                         "task_status": _task_status(data),
+                        "output_settled": bool(latest_result or latest_error),
                     }
+                if _task_is_terminal(data):
+                    terminal_empty_observations += 1
+                    if terminal_empty_observations >= TERMINAL_EMPTY_SETTLE_POLLS:
+                        return {
+                            "task": data,
+                            "timed_out": False,
+                            "remaining_seconds": max(0.0, deadline - time.monotonic()),
+                            "latest_result": latest_result,
+                            "latest_error": latest_error,
+                            "task_terminal": True,
+                            "task_status": _task_status(data),
+                            "output_settled": True,
+                            "note": "task lifecycle completed with stable empty structured output",
+                        }
             elif not result.get("ok"):
                 last_task = {
                     "error": result.get("error"),
@@ -891,10 +916,18 @@ def _build_console_wait_result(
     timed_out = bool(task_detail.get("timed_out", False))
     output = list(task_detail.get("latest_result") or [])
     task_errors = list(task_detail.get("latest_error") or [])
-    output_empty = task_completed and not output and not task_errors
+    output_settled = bool(
+        task_detail.get(
+            "output_settled",
+            task_terminal and bool(output or task_errors),
+        )
+    )
+    output_empty = task_completed and output_settled and not output and not task_errors
     output_partial = timed_out and bool(output)
     terminal_failure = task_terminal and not task_completed
-    output_complete = task_completed or (terminal_failure and bool(task_errors))
+    output_complete = (task_completed and output_settled) or (
+        terminal_failure and bool(task_errors)
+    )
 
     result: dict[str, Any] = {
         "bid": bid,
@@ -914,6 +947,7 @@ def _build_console_wait_result(
         "output_correlation": "authoritative",
         "output_complete": output_complete,
         "output_empty": output_empty,
+        "output_settled": output_settled,
         "output_partial": output_partial,
         "timed_out": timed_out,
     }
@@ -925,6 +959,7 @@ def _build_console_wait_result(
         timed_out=timed_out,
         output=output,
         task_errors=task_errors,
+        output_settled=output_settled,
         note=task_detail.get("note"),
     )
     if unavailable_reason:
@@ -966,12 +1001,17 @@ def _output_unavailable_reason(
     timed_out: bool,
     output: list[Any],
     task_errors: list[Any],
+    output_settled: bool,
     note: Any,
 ) -> str | None:
     if output or task_errors:
         return None
+    if task_completed and output_settled:
+        return None
     if isinstance(note, str) and note:
         return note
+    if task_completed and not output_settled:
+        return "task lifecycle completed but terminal output did not settle"
     if task_completed:
         return "task completed with no output"
     if timed_out:

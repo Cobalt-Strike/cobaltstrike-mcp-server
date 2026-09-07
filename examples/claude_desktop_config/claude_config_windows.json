@@ -1,12 +1,16 @@
 {
   "mcpServers": {
     "cobalt-strike-windows": {
-      "command": "C:/Users/YourUser/cs-mcp/venv/Scripts/python.exe",
+      "command": "uv",
       "args": [
+        "--directory",
+        "C:/Users/YourUser/cobaltstrike-mcp-server",
+        "run",
+        "--locked",
+        "python",
         "cs_mcp.py",
         "--insecure"
       ],
-      "cwd": "C:/Users/YourUser/cs-mcp",
       "env": {
         "CS_API_USERNAME": "cs_user",
         "CS_API_PASSWORD": "cs_password",
