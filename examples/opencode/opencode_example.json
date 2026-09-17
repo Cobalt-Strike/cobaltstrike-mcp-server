@@ -1,0 +1,32 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "cobalt-strike": {
+      "type": "local",
+      "command": [
+        "python",
+        "cs_mcp.py",
+        "--username",
+        "your_cs_username",
+        "--password",
+        "your_cs_password",
+        "--insecure",
+        "--transport",
+        "stdio",
+        "--server-name",
+        "CobaltStrikeAPI",
+        "--base-url",
+        "https://localhost:50443"
+      ],
+      "environment": {
+        "CS_API_USERNAME": "your_cs_username",
+        "CS_API_PASSWORD": "your_cs_password",
+        "CS_API_BASE_URL": "https://localhost:50443",
+        "CS_API_VERIFY_TLS": "false",
+        "LOG_LEVEL": "INFO",
+        "FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER": "true"
+      },
+      "enabled": true
+    }
+  }
+}
