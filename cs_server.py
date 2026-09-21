@@ -6,12 +6,14 @@ import asyncio
 import ipaddress
 import logging
 
+import httpx
 from fastmcp import FastMCP
 from fastmcp.server.providers.openapi import RouteMap, MCPType
 
 from cs_client import CobaltStrikeClient
 from cs_files import add_cobalt_strike_file_tools
 from cs_interpreter import add_cobalt_strike_interpreter_tools
+from cs_openapi import create_openapi_client
 from cs_prompts import add_cobalt_strike_prompts
 from cs_resources import add_cobalt_strike_resources
 from cs_streams import CobaltStrikeWebSocketStreamManager, add_cobalt_strike_stream_tools
@@ -58,6 +60,7 @@ class CobaltStrikeMCPServer:
         self.server_name = server_name
         self.instructions = instructions
         self._mcp_server: FastMCP | None = None
+        self._openapi_client: httpx.AsyncClient | None = None
         self._websocket_auto_start_task: asyncio.Task | None = None
         self.stream_manager = CobaltStrikeWebSocketStreamManager(
             cs_client,
@@ -80,20 +83,29 @@ class CobaltStrikeMCPServer:
         logger.info("Fetching OpenAPI specification from %s", spec_url)
         openapi_spec = await self.cs_client.fetch_openapi_spec(spec_url)
 
-        # Get the authenticated HTTP client for FastMCP to use
+        # Normalize string responses only for generated tools. Custom helpers
+        # retain the original authenticated client's raw response semantics.
         http_client = self.cs_client.get_authenticated_client()
+        if self._openapi_client:
+            await self._openapi_client.aclose()
+        self._openapi_client = create_openapi_client(http_client, openapi_spec)
 
         # Create the FastMCP server from the OpenAPI spec
         # Exclude authentication endpoints since MCP handles auth automatically
         create_kwargs = {
             "openapi_spec": openapi_spec,
-            "client": http_client,
+            "client": self._openapi_client,
             "name": self.server_name,
             "tags": {"openapi", "cobalt-strike"},
             "route_maps": build_route_maps(),
         }
 
-        self._mcp_server = FastMCP.from_openapi(**create_kwargs)
+        try:
+            self._mcp_server = FastMCP.from_openapi(**create_kwargs)
+        except Exception:
+            await self._openapi_client.aclose()
+            self._openapi_client = None
+            raise
         logger.info("Excluded authentication endpoints from MCP tools")
 
         if self.instructions:
@@ -172,6 +184,9 @@ class CobaltStrikeMCPServer:
             logger.info("Stopping MCP server")
             self.stream_manager.stop_all()
             self._mcp_server = None
+        if self._openapi_client:
+            await self._openapi_client.aclose()
+            self._openapi_client = None
 
     def _schedule_websocket_auto_start(self) -> None:
         if not self.stream_manager.enabled or not self.stream_manager.auto_start or self._websocket_auto_start_task:

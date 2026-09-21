@@ -181,7 +181,16 @@ uv run --locked python cs_mcp.py --transport stdio
 ```
 ## Available Tools
 
-The MCP server automatically exposes all [Cobalt Strike REST API endpoints](https://hstechdocs.helpsystems.com/manuals/cobaltstrike/current/userguide/content/api/index.html) as tools. Some key categories include:
+The MCP server automatically exposes all [Cobalt Strike REST API endpoints](https://hstechdocs.helpsystems.com/manuals/cobaltstrike/current/userguide/content/api/index.html) as tools.
+
+Generated tools return declared text responses as structured MCP output, such as
+`{"result": "profile text"}`, even when the REST API returns unquoted text with an
+`application/json` header. A local HTTP adapter handles non-nullable string
+schemas without changing FastMCP or defining tools per endpoint. Already valid
+JSON strings are preserved; numeric-looking text remains a string. Binary,
+streaming, nullable/composed schemas, no-content responses, and HTTP errors are
+outside this normalization. Custom raw-text and download helpers retain their
+existing response behavior.
 
 ### Beacon Management
 - `listBeacons`: Get all active beacons

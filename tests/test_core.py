@@ -5,41 +5,13 @@ import contextlib
 import base64
 import io
 import os
-import sys
 import tempfile
 import time
-import types
 import unittest
 import zipfile
 from unittest.mock import patch
 
 import httpx
-
-if "fastmcp.server.providers.openapi" not in sys.modules:
-    fastmcp_module = types.ModuleType("fastmcp")
-    server_module = types.ModuleType("fastmcp.server")
-    providers_module = types.ModuleType("fastmcp.server.providers")
-    openapi_module = types.ModuleType("fastmcp.server.providers.openapi")
-
-    class _FastMCP:
-        pass
-
-    class _RouteMap:
-        def __init__(self, *, tags=None, pattern=None, mcp_type=None):
-            self.tags = tags
-            self.pattern = pattern
-            self.mcp_type = mcp_type
-
-    class _MCPType:
-        EXCLUDE = "exclude"
-
-    fastmcp_module.FastMCP = _FastMCP
-    openapi_module.RouteMap = _RouteMap
-    openapi_module.MCPType = _MCPType
-    sys.modules.setdefault("fastmcp", fastmcp_module)
-    sys.modules.setdefault("fastmcp.server", server_module)
-    sys.modules.setdefault("fastmcp.server.providers", providers_module)
-    sys.modules.setdefault("fastmcp.server.providers.openapi", openapi_module)
 
 import cs_mcp
 import cs_files
