@@ -9,12 +9,14 @@ import logging
 import httpx
 from fastmcp import FastMCP
 from fastmcp.server.providers.openapi import RouteMap, MCPType
+from fastmcp.utilities.openapi import HTTPRoute
 
 from cs_client import CobaltStrikeClient
 from cs_files import add_cobalt_strike_file_tools
 from cs_interpreter import add_cobalt_strike_interpreter_tools
 from cs_openapi import create_openapi_client
 from cs_prompts import add_cobalt_strike_prompts
+from cs_queries import GROUPED_OPERATION_NAMES, QUERY_TOOL_NAMES, add_cobalt_strike_query_tools
 from cs_resources import add_cobalt_strike_resources
 from cs_streams import CobaltStrikeWebSocketStreamManager, add_cobalt_strike_stream_tools
 
@@ -22,6 +24,55 @@ logger = logging.getLogger(__name__)
 
 HTTP_TRANSPORTS = {"http", "streamable-http", "sse"}
 SUPPORTED_TRANSPORTS = HTTP_TRANSPORTS | {"stdio"}
+
+# Match exact OpenAPI operation IDs, not paths, tags, or generated name prefixes.
+OPENAPI_OPERATION_NAMES = frozenset({
+    "getHostCallbackInformation",
+    "listCredentials",
+    "listTokenStore",
+    "getSyscallMethod",
+    "listJobs",
+    "listTasks",
+    "getTaskById",
+    "listListeners",
+    "getListenerByName",
+    "listRemoteExecutionCommandMethods",
+    "listRemoteExecuteBeaconMethods",
+    "listElevateCommandMethods",
+    "listElevateBeaconMethods",
+    "listScreenshots",
+    "getScreenshot",
+    "listKeyStrokes",
+    "listDownloads",
+    "getDownload",
+    "getCredential",
+    "getTeamserverIp",
+    "getSystemInformation",
+    "getC2Profile",
+    "getKillDate",
+    "listBeacons",
+    "getBeacon",
+    "listTaskSummariesByBid",
+    "listTasksByBid",
+    "listHostProfiles",
+    "getKeyStrokesByBid",
+    "listCommandHelp",
+    "getCommandHelp",
+    "listActiveDownloads",
+    "listArtifacts",
+    "getPayloadStoreMetadata",
+    "addCredential",
+})
+CUSTOM_TOOL_NAMES = frozenset({
+    "getDownloadedFileText",
+    "getLiveBeaconSnapshot",
+    "getBeaconConsoleTail",
+    "lintBeaconInterpreterC",
+    "executeBeaconConsoleAndWait",
+    "runBeaconInterpreterC",
+})
+DIRECT_TOOL_NAMES = OPENAPI_OPERATION_NAMES - GROUPED_OPERATION_NAMES
+ENGAGEMENT_TOOL_NAMES = DIRECT_TOOL_NAMES | QUERY_TOOL_NAMES | CUSTOM_TOOL_NAMES
 
 
 def build_route_maps() -> list[RouteMap]:
@@ -32,8 +83,15 @@ def build_route_maps() -> list[RouteMap]:
     ]
 
 
+def map_engagement_route(route: HTTPRoute, mcp_type: MCPType) -> MCPType:
+    """Exclude unlisted operations before FastMCP creates their tool schemas."""
+    if mcp_type == MCPType.EXCLUDE or route.operation_id not in OPENAPI_OPERATION_NAMES:
+        return MCPType.EXCLUDE
+    return MCPType.TOOL
+
+
 class CobaltStrikeMCPServer:
-    """MCP server that exposes Cobalt Strike REST API endpoints as MCP tools."""
+    """MCP server exposing a curated set of Cobalt Strike engagement tools."""
 
     def __init__(
         self,
@@ -90,14 +148,15 @@ class CobaltStrikeMCPServer:
             await self._openapi_client.aclose()
         self._openapi_client = create_openapi_client(http_client, openapi_spec)
 
-        # Create the FastMCP server from the OpenAPI spec
-        # Exclude authentication endpoints since MCP handles auth automatically
+        # Only create tools for selected operations. Existing authentication and
+        # reset exclusions still take precedence over the allowlist.
         create_kwargs = {
             "openapi_spec": openapi_spec,
             "client": self._openapi_client,
             "name": self.server_name,
             "tags": {"openapi", "cobalt-strike"},
             "route_maps": build_route_maps(),
+            "route_map_fn": map_engagement_route,
         }
 
         try:
@@ -106,10 +165,18 @@ class CobaltStrikeMCPServer:
             await self._openapi_client.aclose()
             self._openapi_client = None
             raise
-        logger.info("Excluded authentication endpoints from MCP tools")
 
         if self.instructions:
             self._mcp_server.instructions = self.instructions
+
+        operation_tools = {tool.name: tool for tool in await self._mcp_server.list_tools()}
+        missing_operations = OPENAPI_OPERATION_NAMES - operation_tools.keys()
+        if missing_operations:
+            logger.warning(
+                "Engagement operations unavailable in the current API specification: %s",
+                ", ".join(sorted(missing_operations)),
+            )
+        add_cobalt_strike_query_tools(self._mcp_server, operation_tools)
 
         # Add MCP prompts and resources from separate modules
         add_cobalt_strike_prompts(self._mcp_server)
@@ -118,7 +185,19 @@ class CobaltStrikeMCPServer:
         add_cobalt_strike_file_tools(self._mcp_server, self.cs_client)
         add_cobalt_strike_interpreter_tools(self._mcp_server, self.cs_client)
 
-        logger.info("Created FastMCP server with OpenAPI specification")
+        # Enforce the same catalog for custom helpers and future registrations.
+        # Scope the deny rule to tools so prompts and resources stay available.
+        self._mcp_server.disable(components={"tool"})
+        self._mcp_server.enable(names=set(ENGAGEMENT_TOOL_NAMES), components={"tool"})
+
+        published_names = {tool.name for tool in await self._mcp_server.list_tools()}
+        missing_names = ENGAGEMENT_TOOL_NAMES - published_names
+        if missing_names:
+            logger.warning(
+                "Engagement tools unavailable in the current API specification: %s",
+                ", ".join(sorted(missing_names)),
+            )
+        logger.info("Created FastMCP server with %d engagement tools", len(published_names))
         return self._mcp_server
 
     async def run(

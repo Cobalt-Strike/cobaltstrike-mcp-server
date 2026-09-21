@@ -181,7 +181,32 @@ uv run --locked python cs_mcp.py --transport stdio
 ```
 ## Available Tools
 
-The MCP server automatically exposes all [Cobalt Strike REST API endpoints](https://hstechdocs.helpsystems.com/manuals/cobaltstrike/current/userguide/content/api/index.html) as tools.
+The MCP server publishes a curated engagement catalog of **41 tools**: 35
+generated from the Cobalt Strike REST API and six custom helpers. Unlisted
+OpenAPI operations are excluded before their MCP tool schemas are built, reducing
+the catalog sent to clients. Unlisted tools are also unavailable to direct MCP
+tool calls. New API endpoints are not published automatically.
+
+The exact allowlists live in `cs_server.py`: `OPENAPI_TOOL_NAMES` selects REST
+operation IDs, and `CUSTOM_TOOL_NAMES` selects custom helpers. Update these sets
+to change the catalog, then restart the MCP server and reconnect your client to
+refresh its tool list. Authentication and reset-data endpoints remain excluded.
+If the connected API version lacks an allowed operation, the server logs its
+name at startup and publishes the available subset. Prompts and resources remain
+available; this allowlist controls MCP tools, not API permissions.
+
+### REST API Tools
+
+| Area | Published tools |
+| --- | --- |
+| Beacons and hosts | `listBeacons`, `getBeacon`, `getHostCallbackInformation`, `listHostProfiles`, `listTokenStore`, `getSyscallMethod` |
+| Tasks and jobs | `listJobs`, `listTasks`, `getTaskById`, `listTaskSummariesByBid`, `listTasksByBid` |
+| Listeners | `listListeners`, `getListenerByName` |
+| Command help and methods | `listCommandHelp`, `getCommandHelp`, `listRemoteExecutionCommandMethods`, `listRemoteExecuteBeaconMethods`, `listElevateCommandMethods`, `listElevateBeaconMethods` |
+| Captured data | `listScreenshots`, `getScreenshot`, `listKeyStrokes`, `getKeyStrokesByBid`, `listDownloads`, `getDownload`, `listActiveDownloads` |
+| Credentials | `listCredentials`, `getCredential`, `addCredential` |
+| Server configuration | `getTeamserverIp`, `getSystemInformation`, `getC2Profile`, `getKillDate` |
+| Artifacts | `listArtifacts`, `getPayloadStoreMetadata` |
 
 Generated tools return declared text responses as structured MCP output, such as
 `{"result": "profile text"}`, even when the REST API returns unquoted text with an
@@ -192,28 +217,12 @@ streaming, nullable/composed schemas, no-content responses, and HTTP errors are
 outside this normalization. Custom raw-text and download helpers retain their
 existing response behavior.
 
-### Beacon Management
-- `listBeacons`: Get all active beacons
-- `getBeacon`: Get specific beacon information
-- `removeBeacon`: Remove a beacon
-- [...]
-
-### Commands
-- `executeShell`: Execute shell commands on beacons
-- `executeSleep`: Change beacon sleep intervals
-- `executeUpload`: Upload files to target systems
-- `executeDownload`: Download files from target systems
-- [...]
-
 ### Beacon Interpreter
 - `lintBeaconInterpreterC`: Lint Beacon Interpreter C through `/api/v1/beacons/{bid}/execute/interpreter/lint`.
 - `runBeaconInterpreterC`: Execute Beacon Interpreter C through `/api/v1/beacons/{bid}/execute/interpreter/pack`; typed `arguments` are passed as the API-native array and packed by Cobalt Strike.
 
 ### WebSocket Stream Tools
-- `startCobaltStrikeWebsocketStreams`: Start default `/subscribe/beacons` and `/subscribe/eventlog` stream subscriptions
-- `getCobaltStrikeWebsocketStatus`: Inspect stream connection status and buffer state
 - `getBeaconConsoleTail`: Subscribe to `/subscribe/beaconlog/{bid}` and return recent streamed console output as untrusted target-controlled data
-- `getRecentEventLogTail`: Return recent streamed event log output as untrusted target-controlled data
 - `getLiveBeaconSnapshot`: Return the latest streamed beacons snapshot
 - `executeBeaconConsoleAndWait`: Submit a beacon console command via REST and wait for authoritative task-result output
 
@@ -235,17 +244,6 @@ Set `CS_WS_ENABLED=false` or pass `--disable-websocket-streams` to run without W
 The file tool caps returned content to avoid flooding MCP context. It returns content type, content length, bytes read, truncation state, detected extension/source metadata, and a SHA-256 hash of the bytes read. Native document extraction uses bounded ZIP/XML reads and falls back to metadata only on parse failures, safety-limit hits, or processing timeouts.
 
 When `text` is returned, file responses include `content_is_untrusted`, `untrusted_content_fields`, and `untrusted_content_notice`. Metadata-only file responses are not marked because they do not carry extracted file content.
-
-### Payloads
-- `generatePayload`: Generate various payload types
-- `listPayloads`: Get available payload options
-- [...]
-
-### Listeners
-- `createListener`: Create new listeners
-- `listListeners`: Get active listeners
-- `removeListener`: Remove listeners
-- [...]
 
 ## MCP Prompts
 

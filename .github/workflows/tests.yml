@@ -43,12 +43,14 @@ jobs:
             cs_audit.py \
             cs_client.py \
             cs_openapi.py \
+            cs_queries.py \
             cs_server.py \
             cs_files.py \
             cs_resources.py \
             cs_streams.py \
             tests/test_core.py \
-            tests/test_openapi.py
+            tests/test_openapi.py \
+            tests/test_tool_catalog.py
 
       - name: Validate example JSON
         run: |
