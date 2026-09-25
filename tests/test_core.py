@@ -1407,12 +1407,32 @@ class HttpHelperTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HealthStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def test_health_checks_supported_route_and_reports_api_failure(self) -> None:
+        # Match the REST API's getTeamserverIp operation; all other routes are 404.
+        for api_status in (200, 401, 503, 200):
+            with self.subTest(api_status=api_status):
+                requests = []
+
+                def respond(request):
+                    requests.append((request.method, request.url.path))
+                    status = api_status if request.url.path == "/api/v1/config/teamserverIp" else 404
+                    return httpx.Response(status, text="response-body-canary")
+
+                client = CobaltStrikeClient("https://api.example")
+                async with httpx.AsyncClient(base_url=client.base_url, transport=httpx.MockTransport(respond)) as transport:
+                    with patch.object(client, "get_authenticated_client", return_value=transport):
+                        result = await build_health_status(client)
+                self.assertEqual(result["cobalt_strike_api"]["ok"], api_status == 200)
+                self.assertEqual(result["cobalt_strike_api"]["status_code"], api_status)
+                self.assertEqual(requests, [("GET", "/api/v1/config/teamserverIp")])
+                self.assertNotIn("response-body-canary", str(result))
+
     async def test_build_health_status_uses_mocked_api_response(self) -> None:
         cs_client = _FakeCobaltStrikeClient(
             [
                 {
                     "ok": True,
-                    "endpoint": "/api/v1/config/localip",
+                    "endpoint": "/api/v1/config/teamserverIp",
                     "status_code": 200,
                     "text": "10.0.0.1",
                 }

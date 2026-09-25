@@ -36,7 +36,7 @@ async def build_health_status(
     stream_manager: CobaltStrikeWebSocketStreamManager | None = None,
 ) -> dict[str, Any]:
     """Build a sanitized health/status payload."""
-    api_result = await cs_client.request_text("GET", "/api/v1/config/localip")
+    api_result = await cs_client.request_text("GET", "/api/v1/config/teamserverIp")
     api_ok = bool(api_result.get("ok"))
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
