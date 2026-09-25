@@ -98,7 +98,7 @@ def add_cobalt_strike_resources(
         Returns:
             JSON representation of server information
         """
-        localip_result = await cs_client.request_text("GET", "/api/v1/config/localip")
+        localip_result = await cs_client.request_text("GET", "/api/v1/config/teamserverIp")
         if localip_result.get("ok"):
             version_data = {
                 "version": "available",
