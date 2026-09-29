@@ -181,14 +181,16 @@ uv run --locked python cs_mcp.py --transport stdio
 ```
 ## Available Tools
 
-The MCP server publishes a curated engagement catalog of **41 tools**: 35
-generated from the Cobalt Strike REST API and six custom helpers. Unlisted
+The MCP server publishes a curated engagement catalog of **up to 28 tools**: 14
+direct REST tools, eight grouped REST queries, and six custom helpers. The REST
+tools cover 35 allowed API operations. Unlisted
 OpenAPI operations are excluded before their MCP tool schemas are built, reducing
 the catalog sent to clients. Unlisted tools are also unavailable to direct MCP
 tool calls. New API endpoints are not published automatically.
 
-The exact allowlists live in `cs_server.py`: `OPENAPI_TOOL_NAMES` selects REST
-operation IDs, and `CUSTOM_TOOL_NAMES` selects custom helpers. Update these sets
+The exact allowlists live in `cs_server.py`: `OPENAPI_OPERATION_NAMES` selects REST
+operation IDs, and `CUSTOM_TOOL_NAMES` selects custom helpers. `cs_queries.py`
+defines the grouped queries. Update these definitions
 to change the catalog, then restart the MCP server and reconnect your client to
 refresh its tool list. Authentication and reset-data endpoints remain excluded.
 If the connected API version lacks an allowed operation, the server logs its
@@ -200,12 +202,12 @@ available; this allowlist controls MCP tools, not API permissions.
 | Area | Published tools |
 | --- | --- |
 | Beacons and hosts | `listBeacons`, `getBeacon`, `getHostCallbackInformation`, `listHostProfiles`, `listTokenStore`, `getSyscallMethod` |
-| Tasks and jobs | `listJobs`, `listTasks`, `getTaskById`, `listTaskSummariesByBid`, `listTasksByBid` |
-| Listeners | `listListeners`, `getListenerByName` |
-| Command help and methods | `listCommandHelp`, `getCommandHelp`, `listRemoteExecutionCommandMethods`, `listRemoteExecuteBeaconMethods`, `listElevateCommandMethods`, `listElevateBeaconMethods` |
-| Captured data | `listScreenshots`, `getScreenshot`, `listKeyStrokes`, `getKeyStrokesByBid`, `listDownloads`, `getDownload`, `listActiveDownloads` |
-| Credentials | `listCredentials`, `getCredential`, `addCredential` |
-| Server configuration | `getTeamserverIp`, `getSystemInformation`, `getC2Profile`, `getKillDate` |
+| Tasks and jobs | `listJobs`, `queryTasks`, `getTaskById` |
+| Listeners | `queryListeners` |
+| Command help and methods | `queryCommandHelp`, `listExecutionMethods` |
+| Captured data | `queryScreenshots`, `queryKeyStrokes`, `listDownloads`, `getDownload`, `listActiveDownloads` |
+| Credentials | `queryCredentials`, `addCredential` |
+| Server configuration | `getServerConfiguration` |
 | Artifacts | `listArtifacts`, `getPayloadStoreMetadata` |
 
 Generated tools return declared text responses as structured MCP output, such as
@@ -214,8 +216,7 @@ Generated tools return declared text responses as structured MCP output, such as
 schemas without changing FastMCP or defining tools per endpoint. Already valid
 JSON strings are preserved; numeric-looking text remains a string. Binary,
 streaming, nullable/composed schemas, no-content responses, and HTTP errors are
-outside this normalization. Custom raw-text and download helpers retain their
-existing response behavior.
+outside this normalization.
 
 ### Beacon Interpreter
 - `lintBeaconInterpreterC`: Lint Beacon Interpreter C through `/api/v1/beacons/{bid}/execute/interpreter/lint`.

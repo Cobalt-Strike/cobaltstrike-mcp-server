@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import re
 from typing import Any
 from urllib.parse import quote
 
 from fastmcp import FastMCP
+from fastmcp.tools import ToolResult
 
 from cs_audit import audit_event
 from cs_client import CobaltStrikeClient, mcp_error
+from cs_results import OBJECT_RESULT_SCHEMA, submission_result, tool_result
 from cs_streams import validate_beacon_id
 
 logger = logging.getLogger(__name__)
@@ -31,12 +32,12 @@ SHORT_MAX = 2**15 - 1
 def add_cobalt_strike_interpreter_tools(mcp_server: FastMCP, cs_client: CobaltStrikeClient) -> None:
     """Add MCP tools for Cobalt Strike Beacon Interpreter C lint and execution."""
 
-    @mcp_server.tool()
+    @mcp_server.tool(output_schema=OBJECT_RESULT_SCHEMA)
     async def lintBeaconInterpreterC(
         bid: str,
         script: str,
         files: dict[str, str] | None = None,
-    ) -> str:
+    ) -> ToolResult:
         """Lint Beacon Interpreter C source using /execute/interpreter/lint.
 
         The script value may be inline C source or a symbolic reference such as
@@ -63,15 +64,15 @@ def add_cobalt_strike_interpreter_tools(mcp_server: FastMCP, cs_client: CobaltSt
             status="completed" if result.get("ok") else "failed",
             details={"endpoint": result.get("endpoint"), "status_code": result.get("status_code")},
         )
-        return json.dumps(result, indent=2)
+        return tool_result(result)
 
-    @mcp_server.tool()
+    @mcp_server.tool(output_schema=OBJECT_RESULT_SCHEMA)
     async def runBeaconInterpreterC(
         bid: str,
         script: str,
         arguments: list[dict[str, Any]] | None = None,
         files: dict[str, str] | None = None,
-    ) -> str:
+    ) -> ToolResult:
         """Execute Beacon Interpreter C source using /execute/interpreter/pack.
 
         The API now packs typed arguments server-side. Pass arguments as an array
@@ -102,7 +103,7 @@ def add_cobalt_strike_interpreter_tools(mcp_server: FastMCP, cs_client: CobaltSt
             status="completed" if result.get("ok") else "failed",
             details={"endpoint": result.get("endpoint"), "status_code": result.get("status_code")},
         )
-        return json.dumps(result, indent=2)
+        return tool_result(result)
 
     logger.info("Added MCP interpreter tools")
 
@@ -119,7 +120,9 @@ async def lint_interpreter_c_code(
         encoded_bid = quote(validate_beacon_id(bid), safe="")
         payload = build_interpreter_payload(script=script, files=files)
     except ValueError as exc:
-        return mcp_error("Invalid interpreter lint request", exception=str(exc))
+        return mcp_error("Invalid interpreter lint request", exception=str(exc),
+                         error_code="invalid_arguments", error_stage="validation",
+                         resolution="Supply a valid bid, nonempty script and valid base64 files as described by the tool schema.")
 
     return await cs_client.request_json(
         "POST",
@@ -143,13 +146,15 @@ async def run_interpreter_c_code(
         if arguments is not None:
             payload["arguments"] = normalize_interpreter_arguments(arguments)
     except ValueError as exc:
-        return mcp_error("Invalid interpreter execution request", exception=str(exc))
+        return mcp_error("Invalid interpreter execution request", exception=str(exc),
+                         error_code="invalid_arguments", error_stage="validation",
+                         resolution="Check bid, script, base64 files and each typed argument; accepted types are binary, int, short, str and wideStr.")
 
-    return await cs_client.request_json(
+    return submission_result(await cs_client.request_json(
         "POST",
         f"/api/v1/beacons/{encoded_bid}/execute/interpreter/pack",
         json=payload,
-    )
+    ))
 
 
 def build_interpreter_payload(

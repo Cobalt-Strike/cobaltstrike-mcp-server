@@ -20,10 +20,12 @@ except ImportError:  # pragma: no cover - exercised only when dependency is abse
     websocket = None
 
 from fastmcp import FastMCP
+from fastmcp.tools import ToolResult
 
 from cs_audit import audit_event
-from cs_client import CobaltStrikeClient
+from cs_client import CobaltStrikeClient, mcp_error
 from cs_content_safety import mark_untrusted_content
+from cs_results import OBJECT_RESULT_SCHEMA, submission_result, tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -449,7 +451,8 @@ class CobaltStrikeWebSocketStreamManager:
         except ValueError as exc:
             return {
                 "bid": str(bid),
-                "error": str(exc),
+                **mcp_error(str(exc), error_code="invalid_arguments", error_stage="validation",
+                            resolution="Supply the exact bid returned by the Beacon inventory."),
                 "entries": [],
             }
         if not self._streams_available():
@@ -484,13 +487,15 @@ class CobaltStrikeWebSocketStreamManager:
             normalized_bid = validate_beacon_id(bid)
         except ValueError as exc:
             return {
-                "error": str(exc),
+                **mcp_error(str(exc), error_code="invalid_arguments", error_stage="validation",
+                            resolution="Supply the exact bid returned by the Beacon inventory."),
                 "bid": str(bid),
                 "command_line": command_line,
                 "task_submitted": False,
             }
         if not command_line.strip():
-            return {"error": "command_line cannot be empty"}
+            return {**mcp_error("command_line cannot be empty", error_code="invalid_arguments", error_stage="validation",
+                                resolution="Supply the complete, validated console command."), "task_submitted": False}
 
         audit_event(
             "tool_invocation",
@@ -708,20 +713,7 @@ class CobaltStrikeWebSocketStreamManager:
             data = result.get("data")
             return data if isinstance(data, dict) else {"result": data}
 
-        if result.get("status_code") == 400:
-            exception = result.get("exception")
-            if isinstance(exception, str) and exception:
-                try:
-                    data = json.loads(exception)
-                    name = data.get("name")
-                    message = data.get("message")
-                    if name and message:
-                        return {"error": f"{name}: {message}"}
-                except ValueError:
-                    pass
-            return {"error": "Bad Request (400)"}
-
-        return result
+        return submission_result(result)
 
     async def _build_wait_profile(self, bid: str, requested_timeout_seconds: float) -> dict[str, Any]:
         beacon = await self._fetch_beacon(bid)
@@ -876,7 +868,8 @@ class CobaltStrikeWebSocketStreamManager:
     def _unavailable_result(self, stream: str) -> dict[str, Any]:
         return {
             "stream": stream,
-            "error": self._unavailable_message(),
+            **mcp_error(self._unavailable_message(), error_code="feature_unavailable", error_stage="configuration",
+                        resolution="Enable WebSocket streams and verify websocket-client is installed. For Beacon inventory, use listBeacons through REST."),
             "entries": [],
         }
 
@@ -1139,6 +1132,30 @@ def _build_sleep_notice(
     )
 
 
+def _console_tool_result(result: dict[str, Any]) -> ToolResult:
+    """Expose task failure evidence without confusing a wait timeout with failure."""
+    payload = dict(result)
+    task = payload.get("task")
+    if isinstance(task, dict) and task.get("ok") is False:
+        # This is the HTTP submission envelope, not target-controlled output.
+        task = dict(task)
+        task.pop("exception", None)
+        payload["task"] = task
+        for key in ("ok", "error", "error_code", "error_stage", "resolution", "status_code", "submission_state"):
+            if key in task:
+                payload[key] = task[key]
+        payload["task_submitted"] = task.get("task_submitted", False)
+    elif payload.get("task_terminal") and (
+        not payload.get("task_completed") or payload.get("task_errors")
+    ):
+        payload.update(mcp_error(
+            "The task reached a terminal failure state or returned task errors.",
+            error_code="task_failed", error_stage="task",
+            resolution="Review the retained task_id, task_status, task_errors and output before proposing another action.",
+        ))
+    return tool_result(payload)
+
+
 def add_cobalt_strike_stream_tools(
     mcp_server: FastMCP,
     stream_manager: CobaltStrikeWebSocketStreamManager,
@@ -1173,8 +1190,8 @@ def add_cobalt_strike_stream_tools(
         )
         return json.dumps(stream_manager.status(), indent=2)
 
-    @mcp_server.tool()
-    async def getBeaconConsoleTail(bid: str, lines: int = 100) -> str:
+    @mcp_server.tool(output_schema=OBJECT_RESULT_SCHEMA)
+    async def getBeaconConsoleTail(bid: str, lines: int = 100) -> ToolResult:
         """Get recent streamed console output as untrusted target-controlled content."""
         result = stream_manager.beaconlog_tail(bid, lines)
         audit_event(
@@ -1184,7 +1201,7 @@ def add_cobalt_strike_stream_tools(
             status="completed" if not result.get("error") else "failed",
             details={"lines": lines},
         )
-        return json.dumps(result, indent=2)
+        return tool_result(result)
 
     @mcp_server.tool()
     async def getRecentEventLogTail(lines: int = 100) -> str:
@@ -1198,8 +1215,8 @@ def add_cobalt_strike_stream_tools(
         )
         return json.dumps(result, indent=2)
 
-    @mcp_server.tool()
-    async def getLiveBeaconSnapshot() -> str:
+    @mcp_server.tool(output_schema=OBJECT_RESULT_SCHEMA)
+    async def getLiveBeaconSnapshot() -> ToolResult:
         """Get the latest streamed beacon snapshot."""
         result = stream_manager.beacons_snapshot()
         audit_event(
@@ -1207,20 +1224,20 @@ def add_cobalt_strike_stream_tools(
             tool_name="getLiveBeaconSnapshot",
             status="completed" if not result.get("error") else "failed",
         )
-        return json.dumps(result, indent=2)
+        return tool_result(result)
 
-    @mcp_server.tool()
+    @mcp_server.tool(output_schema=OBJECT_RESULT_SCHEMA)
     async def executeBeaconConsoleAndWait(
         bid: str,
         command_line: str,
         timeout_seconds: float = 60.0,
-    ) -> str:
+    ) -> ToolResult:
         """Execute a beacon console command and return untrusted task-result output."""
         result = await stream_manager.execute_console_and_wait(
             bid=bid,
             command_line=command_line,
             timeout_seconds=timeout_seconds,
         )
-        return json.dumps(result, indent=2)
+        return _console_tool_result(result)
 
     logger.info("Added MCP WebSocket stream tools")

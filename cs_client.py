@@ -34,11 +34,22 @@ def mcp_error(
     endpoint: str | None = None,
     status_code: int | None = None,
     exception: str | None = None,
+    error_code: str | None = None,
+    error_stage: str | None = None,
+    resolution: str | None = None,
 ) -> dict[str, Any]:
     """Build a consistent error envelope for MCP-facing helpers."""
     result: dict[str, Any] = {
         "ok": False,
         "error": message,
+        "error_code": error_code or ("http_error" if status_code is not None and status_code >= 400 else "tool_failed"),
+        "error_stage": error_stage or ("upstream" if status_code is not None else "tool"),
+        "resolution": resolution or (
+            "Verify the configured API credentials and reconnect." if status_code == 401 else
+            "Verify the API account's access to this endpoint." if status_code == 403 else
+            "Verify the requested identifier and the endpoint supported by this API version." if status_code == 404 else
+            "Check the API service and request arguments before retrying."
+        ),
     }
     if endpoint is not None:
         result["endpoint"] = endpoint
@@ -243,6 +254,9 @@ class CobaltStrikeClient:
                     endpoint=path,
                     status_code=response.status_code,
                     exception=str(exc),
+                    error_code="invalid_response",
+                    error_stage="upstream",
+                    resolution="Inspect the API response contract and existing task state before retrying a submission.",
                 )
             return {
                 "ok": True,
@@ -251,7 +265,9 @@ class CobaltStrikeClient:
                 "data": data,
             }
         except (httpx.HTTPError, RuntimeError) as exc:
-            return mcp_error("HTTP request failed", endpoint=path, exception=str(exc))
+            return mcp_error("HTTP request failed", endpoint=path, exception=str(exc),
+                             error_code="transport_error", error_stage="transport",
+                             resolution="Verify upstream API connectivity. Check existing task state before retrying a submission.")
 
     async def request_text(self, method: str, path: str, **kwargs) -> dict[str, Any]:
         """Make an authenticated request and return a normalized text result."""
@@ -271,7 +287,9 @@ class CobaltStrikeClient:
                 "text": response.text,
             }
         except (httpx.HTTPError, RuntimeError) as exc:
-            return mcp_error("HTTP request failed", endpoint=path, exception=str(exc))
+            return mcp_error("HTTP request failed", endpoint=path, exception=str(exc),
+                             error_code="transport_error", error_stage="transport",
+                             resolution="Verify upstream API connectivity before repeating this read.")
 
     async def _request_with_reauth(self, method: str, path: str, **kwargs) -> httpx.Response:
         client = self.get_authenticated_client()

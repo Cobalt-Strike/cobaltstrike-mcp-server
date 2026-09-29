@@ -46,9 +46,12 @@ jobs:
             cs_queries.py \
             cs_server.py \
             cs_files.py \
+            cs_interpreter.py \
+            cs_results.py \
             cs_resources.py \
             cs_streams.py \
             tests/test_core.py \
+            tests/test_results.py \
             tests/test_openapi.py \
             tests/test_tool_catalog.py
 

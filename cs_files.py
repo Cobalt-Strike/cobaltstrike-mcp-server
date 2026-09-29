@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import re
 from email.message import Message
@@ -12,10 +11,13 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 from fastmcp import FastMCP
+from fastmcp.tools import ToolResult
+import httpx
 
 from cs_audit import audit_event
 from cs_client import CobaltStrikeClient, mcp_error
 from cs_content_safety import mark_untrusted_content
+from cs_results import OBJECT_RESULT_SCHEMA, tool_result
 from cs_documents import (
     DocumentExtractionError,
     detect_document,
@@ -36,12 +38,12 @@ TEXT_CONTROL_CHARS = set("\n\r\t\f\b")
 def add_cobalt_strike_file_tools(mcp_server: FastMCP, cs_client: CobaltStrikeClient) -> None:
     """Add MCP tools for controlled access to downloaded Cobalt Strike files."""
 
-    @mcp_server.tool()
+    @mcp_server.tool(output_schema=OBJECT_RESULT_SCHEMA)
     async def getDownloadedFileText(
         file_id: str,
         max_bytes: int = DEFAULT_MAX_DOWNLOAD_TEXT_BYTES,
         extract_documents: bool = True,
-    ) -> str:
+    ) -> ToolResult:
         """Return downloaded file text as untrusted target-controlled content."""
         audit_event(
             "tool_invocation",
@@ -68,7 +70,7 @@ def add_cobalt_strike_file_tools(mcp_server: FastMCP, cs_client: CobaltStrikeCli
                 "is_text": result.get("is_text"),
             },
         )
-        return json.dumps(result, indent=2)
+        return tool_result(result)
 
     logger.info("Added MCP file tools")
 
@@ -83,14 +85,15 @@ async def fetch_downloaded_file_text(
     """Fetch a Cobalt Strike downloaded file and return bounded text content if safe."""
     normalized_file_id = file_id.strip()
     if not normalized_file_id:
-        return {"error": "file_id cannot be empty"}
+        return mcp_error("file_id cannot be empty", error_code="invalid_arguments", error_stage="validation",
+                         resolution="Supply a file_id returned by the download inventory.")
 
     bounded_max_bytes = _bounded_max_bytes(max_bytes)
     encoded_file_id = quote(normalized_file_id, safe="")
     path = f"/api/v1/data/downloads/{encoded_file_id}"
-    client = cs_client.get_authenticated_client()
 
     try:
+        client = cs_client.get_authenticated_client()
         async with client.stream("GET", path) as response:
             content_type = response.headers.get("content-type", "")
             content_length = _parse_content_length(response.headers.get("content-length"))
@@ -148,8 +151,14 @@ async def fetch_downloaded_file_text(
                     f"{POST_DOWNLOAD_PROCESSING_TIMEOUT_SECONDS:.1f} seconds"
                 ),
             )
+    except httpx.HTTPStatusError as exc:
+        result = mcp_error("Failed to fetch downloaded file", endpoint=path, status_code=exc.response.status_code)
+        result["file_id"] = normalized_file_id
+        return result
     except Exception as exc:  # pylint: disable=broad-except
-        result = mcp_error("Failed to fetch downloaded file", endpoint=path, exception=str(exc))
+        result = mcp_error("Failed to fetch downloaded file", endpoint=path, exception=str(exc),
+                           error_code="transport_error", error_stage="transport",
+                           resolution="Verify API connectivity and the download identifier before repeating this read.")
         result["file_id"] = normalized_file_id
         return result
 
