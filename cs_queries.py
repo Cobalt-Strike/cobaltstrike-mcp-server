@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool, ToolResult
+from pydantic import Field
 
 
 QUERY_OPERATIONS = {
@@ -61,7 +62,10 @@ def add_cobalt_strike_query_tools(
         return await tool.run(arguments)
 
     async def getServerConfiguration(
-        section: Literal["teamserver_ip", "system_information", "c2_profile", "kill_date"],
+        section: Annotated[
+            Literal["teamserver_ip", "system_information", "c2_profile", "kill_date"],
+            Field(description="Configuration section to return; exactly one section is returned."),
+        ],
     ) -> ToolResult:
         """Read one server configuration section; returns only the selected section."""
         operation = {
@@ -73,9 +77,18 @@ def add_cobalt_strike_query_tools(
         return await invoke(operation, {})
 
     async def queryTasks(
-        bid: str | None = None,
-        view: Literal["full", "summary"] = "full",
-        format: Literal["plain", "structured"] | None = None,
+        bid: Annotated[
+            str | None,
+            Field(description="Beacon ID. Omit to list global full tasks."),
+        ] = None,
+        view: Annotated[
+            Literal["full", "summary"],
+            Field(description="Task view; defaults to full. Summary requires a Beacon ID."),
+        ] = "full",
+        format: Annotated[
+            Literal["plain", "structured"] | None,
+            Field(description="Optional API format for full Beacon tasks only; omission preserves the API default."),
+        ] = None,
     ) -> ToolResult:
         """List tasks globally or for one Beacon, preserving the selected API result.
 
@@ -96,19 +109,35 @@ def add_cobalt_strike_query_tools(
             arguments["format"] = format
         return await invoke("listTasksByBid", arguments)
 
-    async def queryListeners(name: str | None = None) -> ToolResult:
+    async def queryListeners(
+        name: Annotated[
+            str | None,
+            Field(description="Exact listener name. Omit to list all listeners."),
+        ] = None,
+    ) -> ToolResult:
         """List listeners, or retrieve one by its exact name when name is supplied."""
         if name is None:
             return await invoke("listListeners", {})
         return await invoke("getListenerByName", {"name": _nonempty(name, "name")})
 
-    async def queryCredentials(id: UUID | None = None) -> ToolResult:
+    async def queryCredentials(
+        id: Annotated[
+            UUID | None,
+            Field(description="Credential UUID. Omit to list all credentials."),
+        ] = None,
+    ) -> ToolResult:
         """List credentials, or retrieve one by UUID. Use addCredential to add a record."""
         if id is None:
             return await invoke("listCredentials", {})
         return await invoke("getCredential", {"id": str(id)})
 
-    async def queryCommandHelp(bid: str, command: str | None = None) -> ToolResult:
+    async def queryCommandHelp(
+        bid: Annotated[str, Field(description="Exact Beacon ID returned by the Beacon inventory.")],
+        command: Annotated[
+            str | None,
+            Field(description="Exact Beacon command name. Omit to list available commands."),
+        ] = None,
+    ) -> ToolResult:
         """List available commands for a Beacon, or get help for one command."""
         arguments = {"bid": _nonempty(bid, "bid")}
         if command is None:
@@ -117,8 +146,11 @@ def add_cobalt_strike_query_tools(
         return await invoke("getCommandHelp", arguments)
 
     async def listExecutionMethods(
-        bid: str,
-        kind: Literal["remote_command", "remote_beacon", "elevate_command", "elevate_beacon"],
+        bid: Annotated[str, Field(description="Exact Beacon ID returned by the Beacon inventory.")],
+        kind: Annotated[
+            Literal["remote_command", "remote_beacon", "elevate_command", "elevate_beacon"],
+            Field(description="Execution or elevation method category to list; this tool never executes a method."),
+        ],
     ) -> ToolResult:
         """List methods available to a Beacon for one execution/elevation category.
 
@@ -134,13 +166,23 @@ def add_cobalt_strike_query_tools(
         }[kind]
         return await invoke(operation, {"bid": _nonempty(bid, "bid")})
 
-    async def queryScreenshots(id: str | None = None) -> ToolResult:
+    async def queryScreenshots(
+        id: Annotated[
+            str | None,
+            Field(description="Screenshot ID. Omit to list existing screenshots."),
+        ] = None,
+    ) -> ToolResult:
         """List existing screenshots, or retrieve one by ID; does not capture new screenshots."""
         if id is None:
             return await invoke("listScreenshots", {})
         return await invoke("getScreenshot", {"id": _nonempty(id, "id")})
 
-    async def queryKeyStrokes(bid: str | None = None) -> ToolResult:
+    async def queryKeyStrokes(
+        bid: Annotated[
+            str | None,
+            Field(description="Beacon ID. Omit to list existing keystroke records globally."),
+        ] = None,
+    ) -> ToolResult:
         """Read existing keystroke records globally or for one Beacon; does not start collection."""
         if bid is None:
             return await invoke("listKeyStrokes", {})

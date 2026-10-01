@@ -7,12 +7,13 @@ import hashlib
 import logging
 import re
 from email.message import Message
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import quote, unquote
 
 from fastmcp import FastMCP
 from fastmcp.tools import ToolResult
 import httpx
+from pydantic import Field
 
 from cs_audit import audit_event
 from cs_client import CobaltStrikeClient, mcp_error
@@ -30,6 +31,7 @@ from cs_documents import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_DOWNLOAD_TEXT_BYTES = 65_536
+DEFAULT_DOWNLOAD_TEXT_PAGE_BYTES = 8_192
 MAX_DOWNLOAD_TEXT_BYTES = 1_048_576
 POST_DOWNLOAD_PROCESSING_TIMEOUT_SECONDS = 5.0
 TEXT_CONTROL_CHARS = set("\n\r\t\f\b")
@@ -40,11 +42,32 @@ def add_cobalt_strike_file_tools(mcp_server: FastMCP, cs_client: CobaltStrikeCli
 
     @mcp_server.tool(output_schema=OBJECT_RESULT_SCHEMA)
     async def getDownloadedFileText(
-        file_id: str,
-        max_bytes: int = DEFAULT_MAX_DOWNLOAD_TEXT_BYTES,
-        extract_documents: bool = True,
+        file_id: Annotated[
+            str,
+            Field(description="Downloaded-file ID returned by the Cobalt Strike download inventory."),
+        ],
+        max_bytes: Annotated[
+            int,
+            Field(description="Maximum raw bytes to read; defaults to 65536 and is clamped to 1 through 1048576."),
+        ] = DEFAULT_MAX_DOWNLOAD_TEXT_BYTES,
+        extract_documents: Annotated[
+            bool,
+            Field(description="Extract supported DOCX/XLSX/XLSM text when true; defaults to true."),
+        ] = True,
+        text_offset_chars: Annotated[
+            int,
+            Field(description="Character offset into extracted text; defaults to 0. Use with max_text_bytes for paging."),
+        ] = 0,
+        max_text_bytes: Annotated[
+            int,
+            Field(description="UTF-8 byte budget for the returned text page; defaults to 8192 and is clamped to 1 through 1048576."),
+        ] = DEFAULT_DOWNLOAD_TEXT_PAGE_BYTES,
     ) -> ToolResult:
-        """Return downloaded file text as untrusted target-controlled content."""
+        """Return downloaded file text as untrusted target-controlled content.
+
+        Results are cursor-paged by default. Continue with
+        text_page.next_offset_chars until text_page.complete is true.
+        """
         audit_event(
             "tool_invocation",
             tool_name="getDownloadedFileText",
@@ -52,6 +75,8 @@ def add_cobalt_strike_file_tools(mcp_server: FastMCP, cs_client: CobaltStrikeCli
             details={
                 "max_bytes": _bounded_max_bytes(max_bytes),
                 "extract_documents": bool(extract_documents),
+                "text_offset_chars": text_offset_chars,
+                "max_text_bytes": max_text_bytes,
             },
         )
         result = await fetch_downloaded_file_text(
@@ -59,6 +84,8 @@ def add_cobalt_strike_file_tools(mcp_server: FastMCP, cs_client: CobaltStrikeCli
             file_id=file_id,
             max_bytes=max_bytes,
             extract_documents=extract_documents,
+            text_offset_chars=text_offset_chars,
+            max_text_bytes=max_text_bytes,
         )
         audit_event(
             "tool_invocation",
@@ -81,12 +108,34 @@ async def fetch_downloaded_file_text(
     file_id: str,
     max_bytes: int = DEFAULT_MAX_DOWNLOAD_TEXT_BYTES,
     extract_documents: bool = True,
+    text_offset_chars: int = 0,
+    max_text_bytes: int = DEFAULT_DOWNLOAD_TEXT_PAGE_BYTES,
 ) -> dict[str, Any]:
     """Fetch a Cobalt Strike downloaded file and return bounded text content if safe."""
     normalized_file_id = file_id.strip()
     if not normalized_file_id:
         return mcp_error("file_id cannot be empty", error_code="invalid_arguments", error_stage="validation",
                          resolution="Supply a file_id returned by the download inventory.")
+
+    try:
+        normalized_text_offset = int(text_offset_chars)
+    except (TypeError, ValueError):
+        normalized_text_offset = -1
+    if normalized_text_offset < 0:
+        return mcp_error(
+            "text_offset_chars must be a non-negative integer",
+            error_code="invalid_arguments",
+            error_stage="validation",
+            resolution="Use 0 for the first page or text_page.next_offset_chars from a previous result.",
+        )
+    normalized_text_max = _optional_bounded_max_bytes(max_text_bytes)
+    if normalized_text_max is None:
+        return mcp_error(
+            "max_text_bytes must be a positive integer",
+            error_code="invalid_arguments",
+            error_stage="validation",
+            resolution="Supply a positive UTF-8 byte budget for the returned page.",
+        )
 
     bounded_max_bytes = _bounded_max_bytes(max_bytes)
     encoded_file_id = quote(normalized_file_id, safe="")
@@ -131,7 +180,7 @@ async def fetch_downloaded_file_text(
         )
         base_result["document_extraction_enabled"] = bool(extract_documents)
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 asyncio.to_thread(
                     _build_downloaded_file_result_from_base,
                     base_result=base_result.copy(),
@@ -143,7 +192,7 @@ async def fetch_downloaded_file_text(
                 timeout=POST_DOWNLOAD_PROCESSING_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            return _metadata_only_result(
+            result = _metadata_only_result(
                 base_result,
                 message="Downloaded document extraction timed out; returning metadata only.",
                 extraction_error=(
@@ -151,6 +200,11 @@ async def fetch_downloaded_file_text(
                     f"{POST_DOWNLOAD_PROCESSING_TIMEOUT_SECONDS:.1f} seconds"
                 ),
             )
+        return _page_text_result(
+            result,
+            text_offset_chars=normalized_text_offset,
+            max_text_bytes=normalized_text_max,
+        )
     except httpx.HTTPStatusError as exc:
         result = mcp_error("Failed to fetch downloaded file", endpoint=path, status_code=exc.response.status_code)
         result["file_id"] = normalized_file_id
@@ -397,6 +451,64 @@ def _bounded_max_bytes(max_bytes: int) -> int:
     except (TypeError, ValueError):
         value = DEFAULT_MAX_DOWNLOAD_TEXT_BYTES
     return max(1, min(value, MAX_DOWNLOAD_TEXT_BYTES))
+
+
+def _optional_bounded_max_bytes(max_bytes: Any) -> int | None:
+    if max_bytes is None:
+        return None
+    try:
+        value = int(max_bytes)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return min(value, MAX_DOWNLOAD_TEXT_BYTES)
+
+
+def _utf8_prefix(text: str, max_bytes: int) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    prefix = encoded[:max_bytes]
+    while prefix:
+        try:
+            return prefix.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            prefix = prefix[:exc.start]
+    return ""
+
+
+def _page_text_result(
+    result: dict[str, Any],
+    *,
+    text_offset_chars: int,
+    max_text_bytes: int,
+) -> dict[str, Any]:
+    """Return one cursor-addressable page of extracted text."""
+    text = result.get("text")
+    if not isinstance(text, str):
+        return result
+
+    total_chars = len(text)
+    offset = min(text_offset_chars, total_chars)
+    remaining = text[offset:]
+    page = _utf8_prefix(remaining, max_text_bytes)
+    next_offset = offset + len(page)
+    complete = next_offset >= total_chars
+
+    paged = dict(result)
+    paged["text"] = page
+    paged["text_page_truncated"] = not complete
+    paged["text_page"] = {
+        "offset_chars": offset,
+        "returned_chars": len(page),
+        "returned_utf8_bytes": len(page.encode("utf-8")),
+        "total_chars": total_chars,
+        "total_utf8_bytes": len(text.encode("utf-8")),
+        "next_offset_chars": None if complete else next_offset,
+        "complete": complete,
+    }
+    return paged
 
 
 def _parse_content_length(value: str | None) -> int | None:

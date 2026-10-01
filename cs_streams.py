@@ -11,7 +11,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 from urllib.parse import quote, urlparse, urlunparse
 
 try:
@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover - exercised only when dependency is abse
 
 from fastmcp import FastMCP
 from fastmcp.tools import ToolResult
+from pydantic import Field
 
 from cs_audit import audit_event
 from cs_client import CobaltStrikeClient, mcp_error
@@ -160,10 +161,17 @@ class StreamBuffer:
             self._condition.notify_all()
             return entry.sequence
 
-    def tail(self, count: int) -> list[dict[str, Any]]:
+    def tail(
+        self,
+        count: int,
+        before_sequence: int | None = None,
+    ) -> list[dict[str, Any]]:
         count = max(1, min(count, self._entries.maxlen or count))
         with self._condition:
-            return [entry.to_dict() for entry in list(self._entries)[-count:]]
+            entries = list(self._entries)
+            if before_sequence is not None:
+                entries = [entry for entry in entries if entry.sequence < before_sequence]
+            return [entry.to_dict() for entry in entries[-count:]]
 
     def result_since(self, after_sequence: int) -> dict[str, Any]:
         with self._condition:
@@ -445,7 +453,14 @@ class CobaltStrikeWebSocketStreamManager:
             mark_untrusted_content(result, ["entries"])
         return result
 
-    def beaconlog_tail(self, bid: str, lines: int) -> dict[str, Any]:
+    def beaconlog_tail(
+        self,
+        bid: str,
+        lines: int,
+        *,
+        before_sequence: int | None = None,
+        max_bytes: int | None = None,
+    ) -> dict[str, Any]:
         try:
             normalized_bid = validate_beacon_id(bid)
         except ValueError as exc:
@@ -457,11 +472,40 @@ class CobaltStrikeWebSocketStreamManager:
             }
         if not self._streams_available():
             return self._unavailable_result(_beaconlog_destination(normalized_bid))
+        if before_sequence is not None and before_sequence < 1:
+            return {
+                "bid": normalized_bid,
+                **mcp_error(
+                    "before_sequence must be a positive integer",
+                    error_code="invalid_arguments",
+                    error_stage="validation",
+                    resolution="Omit before_sequence for the newest entries or use entries_page.next_before_sequence.",
+                ),
+                "entries": [],
+            }
+        if max_bytes is not None and max_bytes < 1:
+            return {
+                "bid": normalized_bid,
+                **mcp_error(
+                    "max_bytes must be a positive integer",
+                    error_code="invalid_arguments",
+                    error_stage="validation",
+                    resolution="Omit max_bytes for the legacy result or supply a positive UTF-8 byte budget.",
+                ),
+                "entries": [],
+            }
         self.ensure_beaconlog_stream(normalized_bid)
+        entries = self._beacon_buffer(normalized_bid).tail(lines, before_sequence)
         result = {
             "stream": _beaconlog_destination(normalized_bid),
-            "entries": self._beacon_buffer(normalized_bid).tail(lines),
+            "entries": entries,
         }
+        if before_sequence is not None or max_bytes is not None:
+            result = _page_stream_entries(
+                result,
+                before_sequence=before_sequence,
+                max_bytes=max_bytes,
+            )
         if result["entries"]:
             mark_untrusted_content(result, ["entries"])
         return result
@@ -986,6 +1030,51 @@ def _build_console_wait_result(
     return result
 
 
+def _page_stream_entries(
+    result: dict[str, Any],
+    *,
+    before_sequence: int | None,
+    max_bytes: int | None,
+) -> dict[str, Any]:
+    """Bound a stream page by UTF-8 bytes while retaining newest entries."""
+    entries = list(result.get("entries") or [])
+    selected_count = len(entries)
+    page = entries
+    oversized_entry_sequence = None
+    if max_bytes is not None:
+        page = []
+        for entry in reversed(entries):
+            candidate = [entry, *page]
+            encoded = json.dumps(candidate, ensure_ascii=False, default=str).encode("utf-8")
+            if len(encoded) > max_bytes:
+                if not page:
+                    oversized_entry_sequence = entry.get("sequence") if isinstance(entry, dict) else None
+                break
+            page = candidate
+
+    truncated = len(page) < selected_count
+    next_before_sequence = None
+    if truncated:
+        if page and isinstance(page[0], dict):
+            next_before_sequence = page[0].get("sequence")
+        elif entries and isinstance(entries[-1], dict):
+            next_before_sequence = entries[-1].get("sequence")
+
+    paged = dict(result)
+    paged["entries"] = page
+    paged["entries_page"] = {
+        "before_sequence": before_sequence,
+        "selected_entries": selected_count,
+        "returned_entries": len(page),
+        "returned_utf8_bytes": len(json.dumps(page, ensure_ascii=False, default=str).encode("utf-8")),
+        "max_bytes": max_bytes,
+        "truncated": truncated,
+        "next_before_sequence": next_before_sequence,
+        "oversized_entry_sequence": oversized_entry_sequence,
+    }
+    return paged
+
+
 def _output_unavailable_reason(
     *,
     task_status: str,
@@ -1191,15 +1280,38 @@ def add_cobalt_strike_stream_tools(
         return json.dumps(stream_manager.status(), indent=2)
 
     @mcp_server.tool(output_schema=OBJECT_RESULT_SCHEMA)
-    async def getBeaconConsoleTail(bid: str, lines: int = 100) -> ToolResult:
-        """Get recent streamed console output as untrusted target-controlled content."""
-        result = stream_manager.beaconlog_tail(bid, lines)
+    async def getBeaconConsoleTail(
+        bid: Annotated[str, Field(description="Exact Beacon ID returned by the Beacon inventory.")],
+        lines: Annotated[
+            int,
+            Field(description="Maximum recent entries to select; defaults to 100 and is clamped to the configured buffer."),
+        ] = 100,
+        before_sequence: Annotated[
+            int | None,
+            Field(description="Optional exclusive sequence cursor for older entries; use entries_page.next_before_sequence."),
+        ] = None,
+        max_bytes: Annotated[
+            int | None,
+            Field(description="Optional UTF-8 byte budget for the entries array. Omit to preserve the complete legacy result."),
+        ] = None,
+    ) -> ToolResult:
+        """Get recent streamed console output as untrusted target-controlled content.
+
+        Existing calls retain the legacy tail. Set max_bytes to page large
+        results and continue with entries_page.next_before_sequence.
+        """
+        result = stream_manager.beaconlog_tail(
+            bid,
+            lines,
+            before_sequence=before_sequence,
+            max_bytes=max_bytes,
+        )
         audit_event(
             "tool_invocation",
             tool_name="getBeaconConsoleTail",
             beacon_id=result.get("bid") or bid,
             status="completed" if not result.get("error") else "failed",
-            details={"lines": lines},
+            details={"lines": lines, "before_sequence": before_sequence, "max_bytes": max_bytes},
         )
         return tool_result(result)
 
@@ -1228,9 +1340,15 @@ def add_cobalt_strike_stream_tools(
 
     @mcp_server.tool(output_schema=OBJECT_RESULT_SCHEMA)
     async def executeBeaconConsoleAndWait(
-        bid: str,
-        command_line: str,
-        timeout_seconds: float = 60.0,
+        bid: Annotated[str, Field(description="Exact Beacon ID returned by the Beacon inventory.")],
+        command_line: Annotated[
+            str,
+            Field(description="Exact Beacon console command line to submit after required operator approval."),
+        ],
+        timeout_seconds: Annotated[
+            float,
+            Field(description="Initial wait timeout in seconds; defaults to 60 and may be extended for Beacon sleep/jitter."),
+        ] = 60.0,
     ) -> ToolResult:
         """Execute a beacon console command and return untrusted task-result output."""
         result = await stream_manager.execute_console_and_wait(

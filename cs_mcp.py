@@ -37,6 +37,7 @@ Behavior:
 - If the user provides incomplete input, ask clarifying questions.
 - Never fabricate beacon outputs — only return what's retrieved from the MCP.
 - Output results in a concise, readable way (e.g., as tables or summaries).
+- For large file or console results, use the advertised byte limit and continuation cursor instead of requesting one oversized result.
 """
 
 logger = logging.getLogger(__name__)
@@ -162,7 +163,7 @@ def show_environment_variables() -> None:
         "MCP_LISTEN_PATH": f"URL path for MCP endpoint (default: {DEFAULT_LISTEN_PATH})",
         "MCP_SERVER_NAME": "Name displayed to MCP clients (default: Cobalt Strike API)",
         "MCP_SERVER_INSTRUCTIONS": "Instructions for MCP clients",
-        "MCP_LOG_LEVEL": "Override uvicorn log level for HTTP transport",
+        "MCP_LOG_LEVEL": "Optional HTTP log level override (default: LOG_LEVEL)",
         "MCP_ALLOW_REMOTE_BIND": "Allow non-loopback MCP HTTP/SSE binds when protected by external auth/TLS",
         "MCP_EXTERNAL_AUTH": "Confirm non-loopback MCP HTTP/SSE binds are protected by external auth",
         "MCP_OPERATOR_ID": "Operator identity included in audit logs when available",
@@ -175,7 +176,7 @@ def show_environment_variables() -> None:
         "CS_WS_RECONNECT_SECONDS": f"Seconds between WebSocket reconnect attempts (default: {DEFAULT_WS_RECONNECT_SECONDS})",
         
         # Advanced
-        "LOG_LEVEL": "Application log level (default: INFO)",
+        "LOG_LEVEL": "Application and default HTTP log level (default: INFO)",
     }
     
     print("Supported Environment Variables:")
@@ -326,8 +327,8 @@ def parse_args() -> argparse.Namespace:
     advanced_group = parser.add_argument_group("Advanced")
     advanced_group.add_argument(
         "--log-level",
-        default=os.getenv("MCP_LOG_LEVEL"),
-        help="Override uvicorn log level for HTTP transport",
+        default=os.getenv("MCP_LOG_LEVEL") or os.getenv("LOG_LEVEL") or "INFO",
+        help="Override HTTP log level (default: MCP_LOG_LEVEL, then LOG_LEVEL, then INFO)",
     )
     advanced_group.add_argument(
         "--allow-remote-bind",

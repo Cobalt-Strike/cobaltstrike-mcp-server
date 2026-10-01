@@ -15,6 +15,7 @@ from fastmcp.exceptions import ToolError
 from cs_client import CobaltStrikeClient
 from cs_openapi import create_openapi_client
 from cs_server import CobaltStrikeMCPServer
+from cs_tool_contracts import ACTION_TOOL_NAMES, DESTRUCTIVE_TOOL_NAMES, TOOL_SEARCH_HINTS
 
 
 # Keep the requested public contract independent of the implementation's sets.
@@ -169,11 +170,62 @@ class ToolCatalogTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("bid", by_name["queryCommandHelp"].inputSchema["required"])
             for name in QUERY_TOOLS:
                 self.assertTrue(by_name[name].annotations.readOnlyHint)
+            for name, tool in by_name.items():
+                with self.subTest(tool_contract=name):
+                    self.assertIsNotNone(tool.annotations)
+                    self.assertEqual(tool.annotations.readOnlyHint, name not in ACTION_TOOL_NAMES)
+                    self.assertEqual(tool.annotations.destructiveHint, name in DESTRUCTIVE_TOOL_NAMES)
+                    self.assertEqual(tool.annotations.idempotentHint, name not in ACTION_TOOL_NAMES)
+                    self.assertTrue(tool.annotations.openWorldHint)
+                    self.assertEqual(tool.meta["anthropic/searchHint"], TOOL_SEARCH_HINTS[name])
             with patch.object(wrapper.stream_manager, "beacons_snapshot", return_value={"beacons": []}) as snapshot:
                 await client.call_tool("getLiveBeaconSnapshot")
                 snapshot.assert_called_once_with()
         self.assertEqual(self.requests, [])
         self.assertEqual(spec, original)
+
+    async def test_schemas_remain_compatible_with_aggressorai_catalog_limits(self):
+        server, _ = await self.create_server(catalog_spec())
+        async with Client(server) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+
+        expected_required = {
+            "getDownloadedFileText": {"file_id"},
+            "getBeaconConsoleTail": {"bid"},
+            "lintBeaconInterpreterC": {"bid", "script"},
+            "runBeaconInterpreterC": {"bid", "script"},
+            "executeBeaconConsoleAndWait": {"bid", "command_line"},
+        }
+        for name, required in expected_required.items():
+            with self.subTest(required_arguments=name):
+                self.assertEqual(set(tools[name].inputSchema.get("required", [])), required)
+
+        for name, tool in tools.items():
+            encoded = json.dumps(tool.inputSchema, ensure_ascii=False).encode("utf-8")
+            self.assertLessEqual(len(encoded), 65_536, name)
+
+            pending = [tool.inputSchema]
+            while pending:
+                value = pending.pop()
+                if isinstance(value, dict):
+                    description = value.get("description")
+                    if isinstance(description, str):
+                        self.assertLessEqual(len(description), 1_024, name)
+                    pending.extend(value.values())
+                elif isinstance(value, list):
+                    pending.extend(value)
+
+        interpreter_schema = tools["runBeaconInterpreterC"].inputSchema
+        self.assertNotIn('"$ref"', json.dumps(interpreter_schema))
+        argument_schema = interpreter_schema["properties"]["arguments"]["anyOf"][0]
+        variants = argument_schema["items"]["oneOf"]
+        self.assertEqual(
+            {variant["properties"]["type"]["enum"][0] for variant in variants},
+            {"binary", "int", "short", "str", "wideStr"},
+        )
+        download_schema = tools["getDownloadedFileText"].inputSchema["properties"]
+        self.assertEqual(download_schema["max_text_bytes"]["default"], 8192)
+        self.assertEqual(download_schema["text_offset_chars"]["default"], 0)
 
     async def test_unlisted_tools_cannot_be_called_even_if_added_later(self):
         server, _ = await self.create_server(catalog_spec())

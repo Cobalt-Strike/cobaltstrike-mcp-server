@@ -74,6 +74,10 @@ export CS_WS_AUTO_START="true"
 export LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR
 ```
 
+HTTP server logging inherits `LOG_LEVEL` (default: `INFO`). Set `MCP_LOG_LEVEL`
+only when HTTP logging needs a different level; `--log-level` overrides both
+for HTTP logging. These HTTP overrides have no effect with `stdio`.
+
 #### .env File Support
 
 The server automatically loads environment variables from a `.env` file in the current directory if it exists:
@@ -223,7 +227,7 @@ outside this normalization.
 - `runBeaconInterpreterC`: Execute Beacon Interpreter C through `/api/v1/beacons/{bid}/execute/interpreter/pack`; typed `arguments` are passed as the API-native array and packed by Cobalt Strike.
 
 ### WebSocket Stream Tools
-- `getBeaconConsoleTail`: Subscribe to `/subscribe/beaconlog/{bid}` and return recent streamed console output as untrusted target-controlled data
+- `getBeaconConsoleTail`: Subscribe to `/subscribe/beaconlog/{bid}` and return recent streamed console output as untrusted target-controlled data. Existing calls return the legacy tail; optionally set `max_bytes` and continue older pages with `entries_page.next_before_sequence`.
 - `getLiveBeaconSnapshot`: Return the latest streamed beacons snapshot
 - `executeBeaconConsoleAndWait`: Submit a beacon console command via REST and wait for authoritative task-result output
 
@@ -240,7 +244,7 @@ Set `CS_WS_ENABLED=false` or pass `--disable-websocket-streams` to run without W
 - Audit logs are emitted on the `cs_mcp.audit` logger for custom tool activity. Set `MCP_AUDIT_LOG_FILE=logs/audit.log` to write them as dedicated JSONL records. They include timestamps, tool names, `MCP_OPERATOR_ID` when set, beacon IDs, task IDs, and status metadata. They do not log command output, bearer tokens, passwords, or downloaded file contents.
 
 ### Downloaded File Tools
-- `getDownloadedFileText`: Fetch `/api/v1/data/downloads/{file_id}` and return bounded file text when the content appears textual. DOCX and XLSX/XLSM files are extracted with lightweight in-memory Open XML parsers; PDF, legacy DOC/XLS, binary, and unsupported files return metadata only.
+- `getDownloadedFileText`: Fetch `/api/v1/data/downloads/{file_id}` and return bounded file text when the content appears textual. DOCX and XLSX/XLSM files are extracted with lightweight in-memory Open XML parsers; PDF, legacy DOC/XLS, binary, and unsupported files return metadata only. Text results are cursor-paged by default with an 8192-byte page budget; continue with `text_page.next_offset_chars` until `text_page.complete` is true.
 
 The file tool caps returned content to avoid flooding MCP context. It returns content type, content length, bytes read, truncation state, detected extension/source metadata, and a SHA-256 hash of the bytes read. Native document extraction uses bounded ZIP/XML reads and falls back to metadata only on parse failures, safety-limit hits, or processing timeouts.
 

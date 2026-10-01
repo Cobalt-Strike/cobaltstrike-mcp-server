@@ -25,9 +25,11 @@ from cs_documents import (
     extract_document_text,
 )
 from cs_files import (
+    DEFAULT_DOWNLOAD_TEXT_PAGE_BYTES,
     MAX_DOWNLOAD_TEXT_BYTES,
     _bounded_max_bytes,
     _build_downloaded_file_result,
+    _page_text_result,
     decode_text_payload,
     fetch_downloaded_file_text,
 )
@@ -158,6 +160,9 @@ class _FakeDownloadCsClient:
 
 
 class ConfigTests(unittest.TestCase):
+    def test_default_server_instructions_fit_client_plugin_limit(self) -> None:
+        self.assertLessEqual(len(cs_mcp.DEFAULT_SERVER_INSTRUCTIONS.encode("utf-8")), 1_000)
+
     def test_env_bool(self) -> None:
         with patch.dict(os.environ, {"CS_TEST_BOOL": "yes"}):
             self.assertTrue(cs_mcp.env_bool("CS_TEST_BOOL", False))
@@ -475,6 +480,47 @@ class FileToolTests(unittest.TestCase):
         self.assertEqual(_bounded_max_bytes(0), 1)
         self.assertEqual(_bounded_max_bytes("bad"), 65_536)
         self.assertEqual(_bounded_max_bytes(MAX_DOWNLOAD_TEXT_BYTES + 1), MAX_DOWNLOAD_TEXT_BYTES)
+
+    def test_downloaded_text_paging_is_utf8_safe_and_always_reports_completeness(self) -> None:
+        original = {"text": "AéBC", "text_truncated": False, "content_is_untrusted": True}
+        complete = _page_text_result(original, text_offset_chars=0, max_text_bytes=8)
+        self.assertIsNot(complete, original)
+        self.assertEqual(complete["text"], "AéBC")
+        self.assertTrue(complete["text_page"]["complete"])
+        self.assertIsNone(complete["text_page"]["next_offset_chars"])
+
+        first = _page_text_result(original, text_offset_chars=0, max_text_bytes=3)
+        self.assertEqual(first["text"], "Aé")
+        self.assertTrue(first["text_page_truncated"])
+        self.assertEqual(first["text_page"]["next_offset_chars"], 2)
+        self.assertEqual(first["text_page"]["returned_utf8_bytes"], 3)
+
+        second = _page_text_result(original, text_offset_chars=2, max_text_bytes=8)
+        self.assertEqual(second["text"], "BC")
+        self.assertFalse(second["text_page_truncated"])
+        self.assertIsNone(second["text_page"]["next_offset_chars"])
+
+    def test_downloaded_text_is_cursor_paged_by_default(self) -> None:
+        data = b"A" * (DEFAULT_DOWNLOAD_TEXT_PAGE_BYTES + 10)
+        client = _FakeDownloadCsClient(
+            data,
+            {"content-type": "text/plain", "content-length": str(len(data))},
+        )
+
+        first = asyncio.run(fetch_downloaded_file_text(client, file_id="file-1"))
+        second = asyncio.run(
+            fetch_downloaded_file_text(
+                client,
+                file_id="file-1",
+                text_offset_chars=first["text_page"]["next_offset_chars"],
+            )
+        )
+
+        self.assertEqual(len(first["text"]), DEFAULT_DOWNLOAD_TEXT_PAGE_BYTES)
+        self.assertFalse(first["text_page"]["complete"])
+        self.assertEqual(first["text_page"]["next_offset_chars"], DEFAULT_DOWNLOAD_TEXT_PAGE_BYTES)
+        self.assertEqual(second["text"], "A" * 10)
+        self.assertTrue(second["text_page"]["complete"])
 
     def test_downloaded_plain_text_result_is_unchanged_and_annotated(self) -> None:
         result = self._download_result(data=b"hello\nworld", content_type="text/plain; charset=utf-8")
@@ -818,6 +864,25 @@ class StreamParsingTests(unittest.TestCase):
         self.assertEqual(result["dropped_entries"], 2)
         self.assertEqual(result["first_retained_sequence"], 3)
         self.assertEqual([entry["sequence"] for entry in result["entries"]], [3, 4, 5])
+
+    def test_stream_buffer_cursor_and_byte_page_keep_newest_entries(self) -> None:
+        manager = CobaltStrikeWebSocketStreamManager(_FakeCobaltStrikeClient([]), enabled=True)
+        buffer = manager._beacon_buffer("abc123")  # pylint: disable=protected-access
+        buffer.append("older")
+        buffer.append("middle")
+        buffer.append("newest")
+
+        self.assertEqual(
+            [entry["data"] for entry in buffer.tail(10, before_sequence=3)],
+            ["older", "middle"],
+        )
+        with patch.object(manager, "_streams_available", return_value=True):
+            with patch.object(manager, "ensure_beaconlog_stream", return_value=None):
+                result = manager.beaconlog_tail("abc123", 10, max_bytes=75)
+
+        self.assertTrue(result["entries_page"]["truncated"])
+        self.assertEqual(result["entries"][-1]["data"], "newest")
+        self.assertIsNotNone(result["entries_page"]["next_before_sequence"])
 
     def test_beacon_id_validation(self) -> None:
         self.assertEqual(validate_beacon_id(" abc-123.DEF:4 "), "abc-123.DEF:4")

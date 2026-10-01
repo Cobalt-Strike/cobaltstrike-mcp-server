@@ -19,6 +19,7 @@ from cs_prompts import add_cobalt_strike_prompts
 from cs_queries import GROUPED_OPERATION_NAMES, QUERY_TOOL_NAMES, add_cobalt_strike_query_tools
 from cs_resources import add_cobalt_strike_resources
 from cs_streams import CobaltStrikeWebSocketStreamManager, add_cobalt_strike_stream_tools
+from cs_tool_contracts import CobaltStrikeToolContractTransform, validate_tool_contract_names
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ CUSTOM_TOOL_NAMES = frozenset({
 })
 DIRECT_TOOL_NAMES = OPENAPI_OPERATION_NAMES - GROUPED_OPERATION_NAMES
 ENGAGEMENT_TOOL_NAMES = DIRECT_TOOL_NAMES | QUERY_TOOL_NAMES | CUSTOM_TOOL_NAMES
+validate_tool_contract_names(ENGAGEMENT_TOOL_NAMES)
 
 
 def build_route_maps() -> list[RouteMap]:
@@ -184,6 +186,11 @@ class CobaltStrikeMCPServer:
         add_cobalt_strike_stream_tools(self._mcp_server, self.stream_manager)
         add_cobalt_strike_file_tools(self._mcp_server, self.cs_client)
         add_cobalt_strike_interpreter_tools(self._mcp_server, self.cs_client)
+
+        # Apply client-facing annotations and search metadata after every tool
+        # provider has registered. The transform changes discovery metadata only;
+        # names, schemas, dispatch, and result envelopes remain unchanged.
+        self._mcp_server.add_transform(CobaltStrikeToolContractTransform())
 
         # Enforce the same catalog for custom helpers and future registrations.
         # Scope the deny rule to tools so prompts and resources stay available.

@@ -5,11 +5,12 @@ from __future__ import annotations
 import base64
 import logging
 import re
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastmcp import FastMCP
 from fastmcp.tools import ToolResult
+from pydantic import Field, WithJsonSchema
 
 from cs_audit import audit_event
 from cs_client import CobaltStrikeClient, mcp_error
@@ -28,15 +29,89 @@ INT_MAX = 2**31 - 1
 SHORT_MIN = -(2**15)
 SHORT_MAX = 2**15 - 1
 
+INTERPRETER_ARGUMENT_SCHEMA = {
+    "type": "array",
+    "items": {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["binary"]},
+                    "value": {"type": "string", "description": "Base64-encoded binary value."},
+                },
+                "required": ["type", "value"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["int"]},
+                    "value": {
+                        "type": "integer",
+                        "minimum": INT_MIN,
+                        "maximum": INT_MAX,
+                        "description": "Signed 32-bit integer value.",
+                    },
+                },
+                "required": ["type", "value"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["short"]},
+                    "value": {
+                        "type": "integer",
+                        "minimum": SHORT_MIN,
+                        "maximum": SHORT_MAX,
+                        "description": "Signed 16-bit integer value.",
+                    },
+                },
+                "required": ["type", "value"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["str"]},
+                    "value": {"type": "string", "description": "UTF-8 string value."},
+                },
+                "required": ["type", "value"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["wideStr"]},
+                    "value": {"type": "string", "description": "Wide string value."},
+                },
+                "required": ["type", "value"],
+                "additionalProperties": False,
+            },
+        ]
+    },
+}
+
+InterpreterArguments = Annotated[
+    list[dict[str, Any]],
+    WithJsonSchema(INTERPRETER_ARGUMENT_SCHEMA),
+]
+
 
 def add_cobalt_strike_interpreter_tools(mcp_server: FastMCP, cs_client: CobaltStrikeClient) -> None:
     """Add MCP tools for Cobalt Strike Beacon Interpreter C lint and execution."""
 
     @mcp_server.tool(output_schema=OBJECT_RESULT_SCHEMA)
     async def lintBeaconInterpreterC(
-        bid: str,
-        script: str,
-        files: dict[str, str] | None = None,
+        bid: Annotated[str, Field(description="Exact Beacon ID returned by the Beacon inventory.")],
+        script: Annotated[
+            str,
+            Field(description="Inline C source, @files/<name>, or @artifacts/<path>."),
+        ],
+        files: Annotated[
+            dict[str, str] | None,
+            Field(description="Optional file-name to base64-content map used by @files references; defaults to null."),
+        ] = None,
     ) -> ToolResult:
         """Lint Beacon Interpreter C source using /execute/interpreter/lint.
 
@@ -68,10 +143,19 @@ def add_cobalt_strike_interpreter_tools(mcp_server: FastMCP, cs_client: CobaltSt
 
     @mcp_server.tool(output_schema=OBJECT_RESULT_SCHEMA)
     async def runBeaconInterpreterC(
-        bid: str,
-        script: str,
-        arguments: list[dict[str, Any]] | None = None,
-        files: dict[str, str] | None = None,
+        bid: Annotated[str, Field(description="Exact Beacon ID returned by the Beacon inventory.")],
+        script: Annotated[
+            str,
+            Field(description="Inline C source, @files/<name>, or @artifacts/<path>."),
+        ],
+        arguments: Annotated[
+            InterpreterArguments | None,
+            Field(description="Optional typed argument array; each item requires type and value. Defaults to null."),
+        ] = None,
+        files: Annotated[
+            dict[str, str] | None,
+            Field(description="Optional file-name to base64-content map used by @files references; defaults to null."),
+        ] = None,
     ) -> ToolResult:
         """Execute Beacon Interpreter C source using /execute/interpreter/pack.
 
