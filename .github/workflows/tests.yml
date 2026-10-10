@@ -42,6 +42,7 @@ jobs:
             cs_mcp.py \
             cs_audit.py \
             cs_client.py \
+            cs_downloads.py \
             cs_openapi.py \
             cs_queries.py \
             cs_server.py \
@@ -53,6 +54,7 @@ jobs:
             tests/test_core.py \
             tests/test_results.py \
             tests/test_openapi.py \
+            tests/test_download_metadata.py \
             tests/test_tool_catalog.py
 
       - name: Validate example JSON

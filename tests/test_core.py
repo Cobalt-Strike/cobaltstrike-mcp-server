@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import base64
 import io
@@ -157,6 +158,9 @@ class _FakeDownloadCsClient:
 
     def get_authenticated_client(self) -> _FakeDownloadHttpClient:
         return self._client
+
+    async def get_download_source(self, file_id: str) -> dict:
+        return {"file_id": file_id, "status": "missing"}
 
 
 class ConfigTests(unittest.TestCase):
@@ -480,6 +484,54 @@ class FileToolTests(unittest.TestCase):
         self.assertEqual(_bounded_max_bytes(0), 1)
         self.assertEqual(_bounded_max_bytes("bad"), 65_536)
         self.assertEqual(_bounded_max_bytes(MAX_DOWNLOAD_TEXT_BYTES + 1), MAX_DOWNLOAD_TEXT_BYTES)
+
+    def test_utf16_boms_take_precedence_over_binary_nul_detection(self) -> None:
+        for encoding, bom in (("utf-16-le", codecs.BOM_UTF16_LE), ("utf-16-be", codecs.BOM_UTF16_BE)):
+            for text in ("", "<root>caf\u00e9 \u6f22\u5b57 \U0001f642</root>\r\n"):
+                for content_type in ("", "application/octet-stream", "text/plain"):
+                    with self.subTest(encoding=encoding, text=text, content_type=content_type):
+                        self.assertEqual(
+                            decode_text_payload(bom + text.encode(encoding), content_type),
+                            (True, "utf-16", text),
+                        )
+
+    def test_truncated_utf16_omits_only_incomplete_trailing_characters(self) -> None:
+        # Includes cuts within a two-byte code unit and a four-byte surrogate pair.
+        expected_prefixes = {2: "", 3: "", 4: "A", 5: "A", 6: "A", 7: "A", 8: "A\U0001f642", 9: "A\U0001f642"}
+        for encoding, bom in (("utf-16-le", codecs.BOM_UTF16_LE), ("utf-16-be", codecs.BOM_UTF16_BE)):
+            data = bom + "A\U0001f642B".encode(encoding)
+            for limit, expected in expected_prefixes.items():
+                with self.subTest(encoding=encoding, limit=limit):
+                    self.assertEqual(
+                        decode_text_payload(data[:limit], truncated=True),
+                        (True, "utf-16", expected),
+                    )
+                    if limit in (3, 5, 6, 7, 9):
+                        self.assertEqual(decode_text_payload(data[:limit]), (False, None, None))
+
+    def test_malformed_utf16_does_not_fall_back_to_other_encodings(self) -> None:
+        for encoding, bom in (("utf-16-le", codecs.BOM_UTF16_LE), ("utf-16-be", codecs.BOM_UTF16_BE)):
+            for text in ("\udc00x", "\ud800x", "\ud800\ud800"):
+                for truncated in (False, True):
+                    with self.subTest(encoding=encoding, text=repr(text), truncated=truncated):
+                        data = bom + text.encode(encoding, errors="surrogatepass")
+                        self.assertEqual(
+                            decode_text_payload(data, "text/plain", truncated=truncated),
+                            (False, None, None),
+                        )
+
+    def test_boms_do_not_turn_binary_or_utf32_into_utf16_text(self) -> None:
+        cases = [b"\x00\x01\x02binary", b"PK\x03\x04\x00\x00\x80"]
+        for encoding, bom in (("utf-16-le", codecs.BOM_UTF16_LE), ("utf-16-be", codecs.BOM_UTF16_BE)):
+            cases.extend([
+                bom + ("\x01" * 20).encode(encoding),
+                bom + ("A" * 100 + "\x00").encode(encoding),
+            ])
+        for encoding, bom in (("utf-32-le", codecs.BOM_UTF32_LE), ("utf-32-be", codecs.BOM_UTF32_BE)):
+            cases.append(bom + "<root>text</root>".encode(encoding))
+        for data in cases:
+            with self.subTest(prefix=data[:8]):
+                self.assertEqual(decode_text_payload(data), (False, None, None))
 
     def test_downloaded_text_paging_is_utf8_safe_and_always_reports_completeness(self) -> None:
         original = {"text": "AéBC", "text_truncated": False, "content_is_untrusted": True}

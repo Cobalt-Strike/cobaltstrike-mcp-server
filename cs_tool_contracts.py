@@ -26,7 +26,7 @@ TOOL_SEARCH_HINTS = {
     "executeBeaconConsoleAndWait": "beacon command console task execute run output wait",
     "getBeacon": "beacon beacons session sessions callback host details",
     "getBeaconConsoleTail": "beacon console log logs output tail recent",
-    "getDownload": "download downloads file files metadata record loot",
+    "getDownload": "download downloads file files content body loot",
     "getDownloadedFileText": "download downloads file files document text content read extract loot",
     "getHostCallbackInformation": "host callback callbacks network beacon connection",
     "getLiveBeaconSnapshot": "live beacon beacons session sessions callbacks snapshot",

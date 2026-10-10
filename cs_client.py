@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from cs_audit import audit_event
+from cs_downloads import DownloadInventory
 
 USER_AGENT = "cs-mcp/1.0"
 
@@ -82,6 +83,7 @@ class CobaltStrikeClient:
         self._token: str | None = None
         self._client: httpx.AsyncClient | None = None
         self._auth_context: AuthContext | None = None
+        self._download_inventory = DownloadInventory()
 
     async def _request_access_token(
         self,
@@ -359,11 +361,18 @@ class CobaltStrikeClient:
             },
         )
 
+    async def get_download_source(self, file_id: str) -> dict[str, Any]:
+        """Look up an exact file ID in this session's download inventory."""
+        return await self._download_inventory.lookup(self.get_authenticated_client(), file_id)
+
     async def close(self) -> None:
         """Close the HTTP client and clean up resources."""
         if self._client:
             await self._client.aclose()
             self._client = None
+        # Replace the cache so an in-flight lookup from an old session cannot
+        # populate the inventory used by a subsequent authentication.
+        self._download_inventory = DownloadInventory()
         logger.debug("Cobalt Strike client closed")
 
     async def __aenter__(self):

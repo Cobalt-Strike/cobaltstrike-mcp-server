@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import hashlib
 import logging
 import re
@@ -17,10 +18,12 @@ from pydantic import Field
 
 from cs_audit import audit_event
 from cs_client import CobaltStrikeClient, mcp_error
+from cs_downloads import unavailable_download_source
 from cs_content_safety import mark_untrusted_content
 from cs_results import OBJECT_RESULT_SCHEMA, tool_result
 from cs_documents import (
     DocumentExtractionError,
+    DocumentTooLargeError,
     detect_document,
     extract_document_text,
     is_document_extension,
@@ -67,6 +70,9 @@ def add_cobalt_strike_file_tools(mcp_server: FastMCP, cs_client: CobaltStrikeCli
 
         Results are cursor-paged by default. Continue with
         text_page.next_offset_chars until text_page.complete is true.
+        source reports inventory provenance for this exact file ID; unknown
+        fields remain null. extraction_outcome/reason describe text extraction,
+        independently of inventory lookup and page completeness.
         """
         audit_event(
             "tool_invocation",
@@ -114,28 +120,30 @@ async def fetch_downloaded_file_text(
     """Fetch a Cobalt Strike downloaded file and return bounded text content if safe."""
     normalized_file_id = file_id.strip()
     if not normalized_file_id:
-        return mcp_error("file_id cannot be empty", error_code="invalid_arguments", error_stage="validation",
-                         resolution="Supply a file_id returned by the download inventory.")
+        return _extraction_not_attempted(mcp_error(
+            "file_id cannot be empty", error_code="invalid_arguments", error_stage="validation",
+            resolution="Supply a file_id returned by the download inventory.",
+        ), "invalid_arguments")
 
     try:
         normalized_text_offset = int(text_offset_chars)
     except (TypeError, ValueError):
         normalized_text_offset = -1
     if normalized_text_offset < 0:
-        return mcp_error(
+        return _extraction_not_attempted(mcp_error(
             "text_offset_chars must be a non-negative integer",
             error_code="invalid_arguments",
             error_stage="validation",
             resolution="Use 0 for the first page or text_page.next_offset_chars from a previous result.",
-        )
+        ), "invalid_arguments")
     normalized_text_max = _optional_bounded_max_bytes(max_text_bytes)
     if normalized_text_max is None:
-        return mcp_error(
+        return _extraction_not_attempted(mcp_error(
             "max_text_bytes must be a positive integer",
             error_code="invalid_arguments",
             error_stage="validation",
             resolution="Supply a positive UTF-8 byte budget for the returned page.",
-        )
+        ), "invalid_arguments")
 
     bounded_max_bytes = _bounded_max_bytes(max_bytes)
     encoded_file_id = quote(normalized_file_id, safe="")
@@ -194,27 +202,40 @@ async def fetch_downloaded_file_text(
         except asyncio.TimeoutError:
             result = _metadata_only_result(
                 base_result,
+                reason="timeout",
                 message="Downloaded document extraction timed out; returning metadata only.",
                 extraction_error=(
                     "document extraction timed out after "
                     f"{POST_DOWNLOAD_PROCESSING_TIMEOUT_SECONDS:.1f} seconds"
                 ),
             )
-        return _page_text_result(
+        result = _page_text_result(
             result,
             text_offset_chars=normalized_text_offset,
             max_text_bytes=normalized_text_max,
         )
+        try:
+            result["source"] = await cs_client.get_download_source(normalized_file_id)
+        except Exception:
+            result["source"] = unavailable_download_source(normalized_file_id, "lookup_failed")
+        if result["source"]["status"] == "matched":
+            mark_untrusted_content(result, [*result.get("untrusted_content_fields", []), "source"])
+        return result
     except httpx.HTTPStatusError as exc:
         result = mcp_error("Failed to fetch downloaded file", endpoint=path, status_code=exc.response.status_code)
         result["file_id"] = normalized_file_id
-        return result
+        return _extraction_not_attempted(result, "fetch_failed")
     except Exception as exc:  # pylint: disable=broad-except
         result = mcp_error("Failed to fetch downloaded file", endpoint=path, exception=str(exc),
                            error_code="transport_error", error_stage="transport",
                            resolution="Verify API connectivity and the download identifier before repeating this read.")
         result["file_id"] = normalized_file_id
-        return result
+        return _extraction_not_attempted(result, "fetch_failed")
+
+
+def _extraction_not_attempted(result: dict[str, Any], reason: str) -> dict[str, Any]:
+    result.update(extraction_outcome="not_attempted", extraction_reason=reason)
+    return result
 
 
 def _build_downloaded_file_result(
@@ -298,6 +319,7 @@ def _build_downloaded_file_result_from_base(
     if is_document_extension(detected_extension) and not extract_documents:
         return _metadata_only_result(
             result,
+            reason="extraction_disabled",
             message="Document extraction is disabled; returning metadata only.",
         )
 
@@ -316,18 +338,28 @@ def _build_downloaded_file_result_from_base(
                     "extraction_method": extracted.extraction_method,
                     "text_format": extracted.text_format,
                     "text_truncated": extracted.text_truncated,
+                    "extraction_outcome": "extracted",
+                    "extraction_reason": (
+                        "input_truncated" if result["truncated"] else
+                        "text_limit_exceeded" if extracted.text_truncated else None
+                    ),
                 }
             )
             return mark_untrusted_content(result, ["text"])
         except DocumentExtractionError as exc:
             return _metadata_only_result(
                 result,
+                reason=(
+                    "parser_limit_exceeded" if isinstance(exc, DocumentTooLargeError) else
+                    "input_truncated" if result["truncated"] else "parse_error"
+                ),
                 message="Downloaded document could not be extracted; returning metadata only.",
                 extraction_error=str(exc),
             )
         except Exception as exc:  # pylint: disable=broad-except
             return _metadata_only_result(
                 result,
+                reason="unexpected_error",
                 message="Unexpected document extraction failure; returning metadata only.",
                 extraction_error=f"unexpected extraction failure: {exc}",
             )
@@ -335,10 +367,13 @@ def _build_downloaded_file_result_from_base(
     if is_unsupported_document_extension(detected_extension):
         return _metadata_only_result(
             result,
+            reason="unsupported_format",
             message="Document format is not supported by the native parser; returning metadata only.",
         )
 
-    is_text, encoding, decoded = decode_text_payload(data, content_type)
+    is_text, encoding, decoded = decode_text_payload(
+        data, content_type, truncated=result["truncated"],
+    )
     if is_text:
         result.update(
             {
@@ -347,6 +382,8 @@ def _build_downloaded_file_result_from_base(
                 "text": decoded,
                 "extraction_method": "plain_text",
                 "text_format": "plain",
+                "extraction_outcome": "extracted",
+                "extraction_reason": "input_truncated" if result["truncated"] else None,
             }
         )
         return mark_untrusted_content(result, ["text"])
@@ -357,6 +394,7 @@ def _build_downloaded_file_result_from_base(
 def _metadata_only_result(
     result: dict[str, Any],
     *,
+    reason: str = "binary_content",
     message: str = "Downloaded file appears to be binary; returning metadata only.",
     extraction_error: str | None = None,
 ) -> dict[str, Any]:
@@ -368,6 +406,8 @@ def _metadata_only_result(
             "extraction_method": "metadata_only",
             "text_format": None,
             "message": message,
+            "extraction_outcome": "metadata_only",
+            "extraction_reason": reason,
         }
     )
     if extraction_error:
@@ -375,10 +415,28 @@ def _metadata_only_result(
     return result
 
 
-def decode_text_payload(data: bytes, content_type: str = "") -> tuple[bool, str | None, str | None]:
-    """Decode bytes if they look like text."""
+def decode_text_payload(
+    data: bytes, content_type: str = "", *, truncated: bool = False,
+) -> tuple[bool, str | None, str | None]:
+    """Decode text, allowing an incomplete UTF-16 tail only for truncated reads."""
     if not data:
         return True, "utf-8", ""
+
+    # UTF-32 LE shares UTF-16 LE's two-byte prefix. Do not reinterpret a
+    # longer BOM as UTF-16; UTF-32 is outside this decoder's supported formats.
+    if data.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        return False, None, None
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        try:
+            decoder = codecs.getincrementaldecoder("utf-16")(errors="strict")
+            text = decoder.decode(data, final=not truncated)
+        except UnicodeError:
+            # A recognized BOM is authoritative. Malformed UTF-16 must not
+            # fall through to a permissive single-byte encoding.
+            return False, None, None
+        if "\x00" not in text and _looks_like_text(text):
+            return True, "utf-16", text
+        return False, None, None
 
     lower_content_type = content_type.lower()
     content_type_says_text = (
