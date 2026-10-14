@@ -37,6 +37,7 @@ def tool_result(result: dict[str, Any]) -> ToolResult:
     if is_error:
         # HTTP helpers retain raw diagnostic detail internally. It is not part
         # of the public error contract and may echo secrets from an upstream API.
+        # Opted-in HTTP failures carry a separately sanitized upstream_error.
         payload.pop("exception", None)
     return ToolResult(
         content=json.dumps(payload, ensure_ascii=False),

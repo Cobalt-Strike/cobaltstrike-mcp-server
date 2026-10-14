@@ -751,6 +751,7 @@ class CobaltStrikeWebSocketStreamManager:
         result = await self.cs_client.request_json(
             "POST",
             f"/api/v1/beacons/{encoded_bid}/consoleCommand",
+            include_upstream_error=True,
             json=payload,
         )
         if result.get("ok"):
@@ -1230,9 +1231,11 @@ def _console_tool_result(result: dict[str, Any]) -> ToolResult:
         task = dict(task)
         task.pop("exception", None)
         payload["task"] = task
-        for key in ("ok", "error", "error_code", "error_stage", "resolution", "status_code", "submission_state"):
+        for key in ("ok", "error", "error_code", "error_stage", "resolution", "status_code", "submission_state", "upstream_error"):
             if key in task:
                 payload[key] = task[key]
+        if "upstream_error" in task:
+            mark_untrusted_content(payload, [*payload.get("untrusted_content_fields", []), "upstream_error"])
         payload["task_submitted"] = task.get("task_submitted", False)
     elif payload.get("task_terminal") and (
         not payload.get("task_completed") or payload.get("task_errors")

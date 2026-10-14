@@ -211,6 +211,7 @@ async def lint_interpreter_c_code(
     return await cs_client.request_json(
         "POST",
         f"/api/v1/beacons/{encoded_bid}/execute/interpreter/lint",
+        include_upstream_error=True,
         json=payload,
     )
 
@@ -237,6 +238,7 @@ async def run_interpreter_c_code(
     return submission_result(await cs_client.request_json(
         "POST",
         f"/api/v1/beacons/{encoded_bid}/execute/interpreter/pack",
+        include_upstream_error=True,
         json=payload,
     ))
 

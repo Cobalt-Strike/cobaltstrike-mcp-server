@@ -12,6 +12,7 @@ import httpx
 
 from cs_audit import audit_event
 from cs_downloads import DownloadInventory
+from cs_errors import add_upstream_error
 
 USER_AGENT = "cs-mcp/1.0"
 
@@ -237,17 +238,22 @@ class CobaltStrikeClient:
         except httpx.HTTPError as exc:
             raise RuntimeError(f"Failed to fetch OpenAPI spec: {exc}") from exc
 
-    async def request_json(self, method: str, path: str, **kwargs) -> dict[str, Any]:
+    async def request_json(
+        self, method: str, path: str, *, include_upstream_error: bool = False, **kwargs,
+    ) -> dict[str, Any]:
         """Make an authenticated request and return a normalized JSON result."""
         try:
             response = await self._request_with_reauth(method, path, **kwargs)
             if response.status_code >= 400:
-                return mcp_error(
+                result = mcp_error(
                     f"HTTP {response.status_code}",
                     endpoint=path,
                     status_code=response.status_code,
                     exception=response.text.strip() or None,
                 )
+                if include_upstream_error:
+                    await add_upstream_error(result, response, secrets=self.diagnostic_secrets())
+                return result
             try:
                 data = response.json()
             except ValueError as exc:
@@ -270,6 +276,10 @@ class CobaltStrikeClient:
             return mcp_error("HTTP request failed", endpoint=path, exception=str(exc),
                              error_code="transport_error", error_stage="transport",
                              resolution="Verify upstream API connectivity. Check existing task state before retrying a submission.")
+
+    def diagnostic_secrets(self) -> tuple[str, ...]:
+        """Known API credentials to remove from opted-in upstream diagnostics."""
+        return (self._token or "", self._auth_context.password if self._auth_context else "")
 
     async def request_text(self, method: str, path: str, **kwargs) -> dict[str, Any]:
         """Make an authenticated request and return a normalized text result."""

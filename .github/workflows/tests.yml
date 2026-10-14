@@ -42,6 +42,7 @@ jobs:
             cs_mcp.py \
             cs_audit.py \
             cs_client.py \
+            cs_errors.py \
             cs_downloads.py \
             cs_openapi.py \
             cs_queries.py \

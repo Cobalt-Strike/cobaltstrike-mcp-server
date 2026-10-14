@@ -122,6 +122,8 @@ def _xlsx_bytes(
 
 
 class _FakeDownloadResponse:
+    status_code = 200
+
     def __init__(self, data: bytes, headers: dict[str, str]) -> None:
         self._data = data
         self.headers = headers

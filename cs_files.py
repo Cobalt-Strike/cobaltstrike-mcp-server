@@ -19,6 +19,7 @@ from pydantic import Field
 from cs_audit import audit_event
 from cs_client import CobaltStrikeClient, mcp_error
 from cs_downloads import unavailable_download_source
+from cs_errors import add_upstream_error
 from cs_content_safety import mark_untrusted_content
 from cs_results import OBJECT_RESULT_SCHEMA, tool_result
 from cs_documents import (
@@ -152,6 +153,11 @@ async def fetch_downloaded_file_text(
     try:
         client = cs_client.get_authenticated_client()
         async with client.stream("GET", path) as response:
+            if response.status_code >= 400:
+                result = mcp_error("Failed to fetch downloaded file", endpoint=path, status_code=response.status_code)
+                await add_upstream_error(result, response, secrets=cs_client.diagnostic_secrets())
+                result["file_id"] = normalized_file_id
+                return _extraction_not_attempted(result, "fetch_failed")
             content_type = response.headers.get("content-type", "")
             content_length = _parse_content_length(response.headers.get("content-length"))
             content_disposition = response.headers.get("content-disposition")
