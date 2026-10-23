@@ -1,0 +1,31 @@
+cobalt_strike:
+  url: https://localhost:50443
+  username: mcp
+  password_path: /run/secrets/cs_password
+  verify_ssl: false
+  token_duration_ms: 86400000
+
+limits:
+  session_idle_timeout_seconds: 1800
+  request_timeout_seconds: 30
+  max_response_chars: 40000
+  max_upload_bytes: 4000000
+  output_wait_seconds: 30
+
+commands:
+  default: ask
+  allow:
+    - group:housekeeping
+    - group:native
+    - group:bof
+    - group:userdefined
+    - screenshot
+  ask:
+    - execute-assembly
+  deny:
+    - group:postexdll
+    - exit
+    - shell
+
+artifacts:
+  directory: ../server/rest-server/restapi/artifacts

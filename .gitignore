@@ -62,6 +62,7 @@ venv.bak/
 # IDE/Editor files
 .vscode/
 .idea/
+.claude/settings.local.json
 *.swp
 *.swo
 *~
@@ -89,9 +90,13 @@ secrets.json
 *_credentials.json
 *_secrets.json
 
-# Custom Claude Desktop config (user should copy from examples)
+# Local client configuration
 claude_desktop_config.json
 
 # Temporary files
 *.tmp
 *.temp
+
+# Local server configuration and lint cache
+config.yml
+.ruff_cache/

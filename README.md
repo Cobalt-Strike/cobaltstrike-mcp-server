@@ -1,347 +1,101 @@
 # Cobalt Strike MCP Server
 
-This is a PoC MCP server developed as part of some internal experiments during the development of [CS 4.12](https://www.cobaltstrike.com/blog/cobalt-strike-412-fix-up-look-sharp) and the [CS REST API](https://hstechdocs.helpsystems.com/manuals/cobaltstrike/current/userguide/content/api/index.html). More information can be found [here](https://www.cobaltstrike.com/blog/me-myself-and-ai).
+Version 0.2 of the official Cobalt Strike MCP
 
-https://github.com/user-attachments/assets/92d15b5f-4744-41aa-a803-abe342db8075
+## Tools
 
-> [!NOTE]
-> This tool is still in early development stage and subject to breaking changes. It has been heavily vibe-coded, so don't be too hard on the quality of the code 😉
-
-## Getting Started
-
-This MCP server provides a bridge between large language models like Claude and the [Cobalt Strike](https://www.cobaltstrike.com) C2 framework. It allows AI assistants to dynamically access and control the [Cobalt Strike](https://www.cobaltstrike.com) functionality through standardized tools, enabling a natural language interface to adversary simulation workflows.
-
-<img width="5061" height="1836" alt="CS_MCP_arch" src="https://github.com/user-attachments/assets/682b7691-df0e-4dbf-b56e-9649b2f8a416" />
-
-### Prerequisites
-
-- **Python 3.10+** installed
-- **uv** installed for dependency management
-- The Cobalt Strike API Server should be running.
-- Cobalt Strike should be installed and configured.
-- Cobalt Strike should be properly licensed
-
-### Installation
-
-1. **Clone the repository**
-
-    ```bash
-    git clone <repository-url>
-    cd cobaltstrike-mcp-server
-    ```
-
-2. **Create the uv-managed environment**
-
-    ```powershell
-    uv sync --locked
-    ```
-
-3. **Verify Installation**
-
-    ```powershell
-    uv run --locked python cs_mcp.py --help
-    ```
-
-### Configuration
-
-#### Environment Variables
-
-You can configure the server using environment variables:
-
-```bash
-# Cobalt Strike API Configuration
-export CS_API_BASE_URL="https://your-teamserver:50443"
-export CS_API_USERNAME="your_username"
-export CS_API_PASSWORD="your_password"
-export CS_API_VERIFY_TLS="false"  # Set to "true" for production
-export CS_API_HTTP_TIMEOUT="30.0"
-
-# MCP Server Configuration
-export MCP_LISTEN_HOST="127.0.0.1"
-export MCP_LISTEN_PORT="3000"
-export MCP_TRANSPORT="http"
-export MCP_SERVER_NAME="Cobalt Strike MCP"
-export MCP_ALLOW_REMOTE_BIND="false"
-export MCP_EXTERNAL_AUTH="false"
-export MCP_OPERATOR_ID="operator-name"
-export MCP_AUDIT_LOG_FILE="logs/audit.log"
-
-# WebSocket stream-backed console output
-export CS_WS_ENABLED="true"
-export CS_WS_AUTO_START="true"
-
-# Logging
-export LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR
-```
-
-HTTP server logging inherits `LOG_LEVEL` (default: `INFO`). Set `MCP_LOG_LEVEL`
-only when HTTP logging needs a different level; `--log-level` overrides both
-for HTTP logging. These HTTP overrides have no effect with `stdio`.
-
-#### .env File Support
-
-The server automatically loads environment variables from a `.env` file in the current directory if it exists:
-
-1. **Copy the example file**:
-   ```bash
-   cp .env.example .env
-   ```
-
-2. **Edit the configuration**:
-   ```bash
-   # Edit .env with your settings
-   CS_API_USERNAME=rest_client
-   CS_API_PASSWORD=SecurePassword123
-   CS_API_VERIFY_TLS=false
-   MCP_TRANSPORT=stdio
-   ```
-
-3. **Run without command line arguments**:
-   ```bash
-   uv run --locked python cs_mcp.py
-   ```
-
-#### Viewing Environment Variables
-
-Use the `--show-env` option to see all supported environment variables and their current values:
-
-```bash
-uv run --locked python cs_mcp.py --show-env
-```
-
-This displays:
-- All supported environment variables
-- Current values (SET/NOT SET)
-- Description and default values
-- Secret-like values such as passwords and tokens are redacted
-- No authentication required
-
-#### Command Line Arguments
-
-The following parameters can be used while starting the MCP Server:
-
-##### Cobalt Strike API
-- `--base-url`: Base URL for the Cobalt Strike REST API (`https://<CS_HOST>:50443`)
-
-##### Authentication
-- `--username`: Cobalt Strike username (required)
-- `--password`: Cobalt Strike password (required)
-- `--duration-ms`: JWT session duration in milliseconds
-
-##### HTTP Client
-- `--http-timeout`: HTTP request timeout in seconds
-- `--insecure`: Disable TLS certificate verification
-- `--verify-tls`: Enable TLS certificate verification
-
-##### MCP Server
-- `--transport`: MCP transport protocol (http, streamable-http, sse, stdio)
-- `--listen-host`: Host interface to bind the server to
-- `--listen-port`: Port to bind the server to
-- `--listen-path`: URL path for the MCP endpoint
-- `--server-name`: Name displayed to MCP clients
-- `--instructions`: Instructions for MCP clients
-
-##### Advanced
-- `--log-level`: Override uvicorn log level for HTTP transport
-- `--allow-remote-bind`: Allow HTTP/SSE transports to bind non-loopback addresses when protected by external auth/TLS
-- `--external-auth`: Confirm non-loopback HTTP/SSE binds are protected by external auth
-- `--enable-websocket-streams` / `--disable-websocket-streams`: Enable or disable Cobalt Strike WebSocket streams
-- `--websocket-auto-start` / `--no-websocket-auto-start`: Start beacons/eventlog stream subscriptions at server startup
-- `--websocket-buffer-size`: Entries retained per stream buffer
-- `--websocket-reconnect-seconds`: Delay between reconnect attempts
-
-### Basic Usage
-
-The MCP Server can be run standalone from the command line.
-
-```bash
-# Start the MCP server with credentials from the environment
-export CS_API_USERNAME="your_username"
-export CS_API_PASSWORD="your_password"
-uv run --locked python cs_mcp.py --insecure
-```
-
-#### Using Environment Variables
-
-```bash
-# Set credentials via environment variables
-export CS_API_USERNAME="rest_client"
-export CS_API_PASSWORD="CobaltStrikePassword"
-export CS_API_VERIFY_TLS="false"
-
-# Run with minimal command line arguments
-uv run --locked python cs_mcp.py
-```
-
-#### Using .env File
-
-```bash
-# Create and edit .env file
-cp .env.example .env
-# Edit .env with your credentials
-
-# Run
-uv run --locked python cs_mcp.py --transport stdio
-```
-## Available Tools
-
-The MCP server publishes a curated engagement catalog of **up to 28 tools**: 14
-direct REST tools, eight grouped REST queries, and six custom helpers. The REST
-tools cover 35 allowed API operations. Unlisted
-OpenAPI operations are excluded before their MCP tool schemas are built, reducing
-the catalog sent to clients. Unlisted tools are also unavailable to direct MCP
-tool calls. New API endpoints are not published automatically.
-
-The exact allowlists live in `cs_server.py`: `OPENAPI_OPERATION_NAMES` selects REST
-operation IDs, and `CUSTOM_TOOL_NAMES` selects custom helpers. `cs_queries.py`
-defines the grouped queries. Update these definitions
-to change the catalog, then restart the MCP server and reconnect your client to
-refresh its tool list. Authentication and reset-data endpoints remain excluded.
-If the connected API version lacks an allowed operation, the server logs its
-name at startup and publishes the available subset. Prompts and resources remain
-available; this allowlist controls MCP tools, not API permissions.
-
-### REST API Tools
-
-| Area | Published tools |
+| Name | Description |
 | --- | --- |
-| Beacons and hosts | `listBeacons`, `getBeacon`, `getHostCallbackInformation`, `listHostProfiles`, `listTokenStore`, `getSyscallMethod` |
-| Tasks and jobs | `listJobs`, `queryTasks`, `getTaskById` |
-| Listeners | `queryListeners` |
-| Command help and methods | `queryCommandHelp`, `listExecutionMethods` |
-| Captured data | `queryScreenshots`, `queryKeyStrokes`, `listDownloads`, `getDownload`, `listActiveDownloads` |
-| Credentials | `queryCredentials`, `addCredential` |
-| Server configuration | `getServerConfiguration` |
-| Artifacts | `listArtifacts`, `getPayloadStoreMetadata` |
+| cs_list_beacons | List beacons, or get one beacon by ID |
+| cs_list_commands | List the commands beacons can run, with their help text |
+| cs_execute_command | Execute one command on a beacon and return a submission receipt |
+| cs_list_command_executions | List past command executions, or get one by ID |
+| cs_read_command_output | Read the output of one command execution as plain text |
+| cs_list_artifacts | List artifacts stored on the team server for beacons to use |
+| cs_upload_artifact | Get a one-time link that stores a file as a new artifact |
+| cs_list_downloads | List files downloaded from beacons, with transfers in progress |
+| cs_fetch_download | Get a one-time link to fetch a download's file |
+| cs_list_screenshots | List screenshots taken on beacons |
+| cs_fetch_screenshot | Get a one-time link to fetch a screenshot's image |
 
-Generated tools return declared text responses as structured MCP output, such as
-`{"result": "profile text"}`, even when the REST API returns unquoted text with an
-`application/json` header. A local HTTP adapter handles non-nullable string
-schemas without changing FastMCP or defining tools per endpoint. Already valid
-JSON strings are preserved; numeric-looking text remains a string. Binary,
-streaming, nullable/composed schemas, no-content responses, and HTTP errors are
-outside this normalization.
+## Requirements
 
-### Beacon Interpreter
-- `lintBeaconInterpreterC`: Lint Beacon Interpreter C through `/api/v1/beacons/{bid}/execute/interpreter/lint`.
-- `runBeaconInterpreterC`: Execute Beacon Interpreter C through `/api/v1/beacons/{bid}/execute/interpreter/pack`; typed `arguments` are passed as the API-native array and packed by Cobalt Strike.
+- Cobalt Strike 4.13+
+- Must run on the team server host
+- Python 3.13+
+- uv
+- Optimized for Codex CLI and Claude Code, but should be compatible with any MCP client
 
-### WebSocket Stream Tools
-- `getBeaconConsoleTail`: Subscribe to `/subscribe/beaconlog/{bid}` and return recent streamed console output as untrusted target-controlled data. Existing calls return the legacy tail; optionally set `max_bytes` and continue older pages with `entries_page.next_before_sequence`.
-- `getLiveBeaconSnapshot`: Return the latest streamed beacons snapshot
-- `executeBeaconConsoleAndWait`: Submit a beacon console command via REST and wait for authoritative task-result output
+## Usage
 
-These tools use the REST API bearer token, connect to `wss://<CS_API_BASE_URL host>:<port>/connect`, and keep bounded in-memory buffers. `MCP_TRANSPORT=stdio` still only controls the MCP client/server transport; the WebSocket stream is a separate Cobalt Strike-side channel.
+### Team Server
 
-`executeBeaconConsoleAndWait` submits the command, polls `GET /api/v1/tasks/{taskId}` with structured output, and treats task `result` / `error` as authoritative. `OUTPUT_RECEIVED` is considered partial and polling continues until `COMPLETED`, a failure/cancel state, or timeout. WebSocket beaconlog lines are only included as bounded diagnostic `websocket_output` after filtering common noise such as Beacon prompts and `host called home, sent: N bytes`. For long-sleep beacons, the tool extends the effective wait timeout using beacon sleep/jitter metadata and includes a `wait_profile.notice` field so clients can tell the user not to expect an immediate response.
+1. Create `config.yml`
 
-Console and event content-bearing responses include `content_is_untrusted`, `untrusted_content_fields`, and `untrusted_content_notice`. MCP clients and LLMs should treat these fields as target-controlled data, not instructions.
+```bash
+cp config.example.yml config.yml
+```
 
-Set `CS_WS_ENABLED=false` or pass `--disable-websocket-streams` to run without WebSocket subscriptions. In that mode, `executeBeaconConsoleAndWait` still submits the beacon console command through REST and returns task-result output with `output_source: "task_result"`.
+2. Update `config.yml` as needed (or use environment variable overrides)
 
-### Health and Audit
-- `cobalt-strike://health/status`: Returns sanitized MCP/API health metadata without response bodies.
-- Audit logs are emitted on the `cs_mcp.audit` logger for custom tool activity. Set `MCP_AUDIT_LOG_FILE=logs/audit.log` to write them as dedicated JSONL records. They include timestamps, tool names, `MCP_OPERATOR_ID` when set, beacon IDs, task IDs, and status metadata. They do not log command output, bearer tokens, passwords, or downloaded file contents.
+| Setting | Environment variable | Default |
+|---|---|---|
+| `cobalt_strike.url` | `CS_MCP_URL` | `https://localhost:50443` |
+| `cobalt_strike.username` | `CS_MCP_USERNAME` | `mcp` |
+| | `CS_MCP_PASSWORD` | |
+| `cobalt_strike.password_path` | `CS_MCP_PASSWORD_PATH` | `/run/secrets/cs_password` |
+| `cobalt_strike.verify_ssl` | `CS_MCP_VERIFY_SSL` | `false` |
+| `cobalt_strike.token_duration_ms` | `CS_MCP_TOKEN_DURATION_MS` | `86400000` |
+| `limits.session_idle_timeout_seconds` | `CS_MCP_SESSION_IDLE_TIMEOUT_SECONDS` | `1800` |
+| `limits.request_timeout_seconds` | `CS_MCP_REQUEST_TIMEOUT_SECONDS` | `30` |
+| `limits.max_response_chars` | `CS_MCP_MAX_RESPONSE_CHARS` | `40000` |
+| `limits.max_upload_bytes` | `CS_MCP_MAX_UPLOAD_BYTES` | `4000000`, hard maximum `10000000` |
+| `limits.output_wait_seconds` | `CS_MCP_OUTPUT_WAIT_SECONDS` | `30`, from `0` (never wait) to `50` |
+| `commands.default` | `CS_MCP_COMMANDS_DEFAULT` | `ask` |
+| `commands.allow` | `CS_MCP_COMMANDS_ALLOW` | [] |
+| `commands.ask` | `CS_MCP_COMMANDS_ASK` | [] |
+| `commands.deny` | `CS_MCP_COMMANDS_DENY` | [] |
+| `artifacts.directory` | `CS_MCP_ARTIFACTS_DIRECTORY` | `../server/rest-server/restapi/artifacts` |
 
-### Downloaded File Tools
-- `getDownloadedFileText`: Fetch `/api/v1/data/downloads/{file_id}` and return bounded file text when the content appears textual. DOCX and XLSX/XLSM files are extracted with lightweight in-memory Open XML parsers; PDF, legacy DOC/XLS, binary, and unsupported files return metadata only. Text results are cursor-paged by default with an 8192-byte page budget; continue with `text_page.next_offset_chars` until `text_page.complete` is true.
+3. Start the MCP server
 
-The file tool caps returned content to avoid flooding MCP context. It returns content type, content length, bytes read, truncation state, detected extension/source metadata, and a SHA-256 hash of the bytes read. Native document extraction uses bounded ZIP/XML reads and falls back to metadata only on parse failures, safety-limit hits, or processing timeouts.
+```bash
+uv sync --locked --no-dev
+uv run --locked --no-dev cobaltstrike-mcp-server --config ./config.yml
+```
 
-When `text` is returned, file responses include `content_is_untrusted`, `untrusted_content_fields`, and `untrusted_content_notice`. Metadata-only file responses are not marked because they do not carry extracted file content.
+### Operator Workstation
 
-## MCP Prompts
+4. Add to your preferred client
 
-The server includes built-in [MCP example prompts](https://github.com/Cobalt-Strike/cobaltstrike-mcp-server/blob/main/cs_prompts.py) to help operation planning.
+You may need to port forward or allow 50051 from your client to the team server.
 
-## MCP Resources
+*Codex CLI*
 
-The server exposes static Cobalt Strike data through [MCP resources](https://github.com/Cobalt-Strike/cobaltstrike-mcp-server/blob/main/cs_resources.py):
+```bash
+codex mcp add cobaltstrike --url http://teamserver:50051/mcp
+```
 
-> [!NOTE]
-> Resources provide read-only access to live Cobalt Strike data and are automatically updated.
+*Claude Code*
 
-## Claude Desktop Integration
+```bash
+claude mcp add --transport http cobaltstrike http://teamserver:50051/mcp
+```
 
-1. **Copy the configuration example**:
-   ```bash
-   cp examples/claude_desktop_config/claude_desktop_config_example.json ~/.config/claude-desktop/claude_desktop_config.json
-   ```
+5. Install the SpecterOps Skills marketplace (optional)
 
-2. **Edit the configuration**:
-   - Set your Cobalt Strike credentials
-   - Adjust the server URL and ports as needed
+We recommend installing the [SpecterOps skills repo](https://github.com/SpecterOps/skills) and its Cobalt Strike operations plugin.
 
-    ```json
-    {
-        "mcpServers": {
-        "Cobalt Strike MCP": {
-            "name": "Cobalt Strike MCP",
-            "command": "uv",
-            "args": [
-                        "--directory",
-                        "<PROJECT LOCATION>",
-                        "run",
-                        "--locked",
-                        "python",
-                        "cs_mcp.py"
-                    ],
-            "env": {
-                        "CS_API_BASE_URL": "https://localhost:50443",
-                        "CS_API_USERNAME": "resp_api_user",
-                        "CS_API_PASSWORD": "CobaltStrikePassword",
-                        "CS_API_VERIFY_TLS": "false",
-                        "MCP_TRANSPORT": "stdio"
-                    }
-        }
-    }
-    }
-    ```
+*Codex CLI*
 
-3. **Restart Claude Desktop** to load the new configuration.
+```bash
+codex plugin marketplace add SpecterOps/skills
+```
 
-## Troubleshooting
+*Claude Code*
 
-### Common Issues
+```bash
+/plugin marketplace add SpecterOps/skills
+```
 
-1. **Authentication Failed**
-   ```
-   RuntimeError: Authentication failed with status 401 or 403
-   ```
-   - Verify your username and password
-   - Ensure the user has API access permissions
-   - Check that the [Cobalt Strike team server is running](https://hstechdocs.helpsystems.com/manuals/cobaltstrike/current/userguide/content/topics/welcome_starting-cs-team-server.htm)
-
-2. **Connection Refused**
-   ```
-   httpx.ConnectError: [Errno 61] Connection refused
-   ```
-   - Verify the base URL and port
-   - Ensure the team server's REST API is enabled
-   - Check firewall settings
-
-3. **TLS Certificate Errors**
-   ```
-   httpx.HTTPStatusError: SSL: CERTIFICATE_VERIFY_FAILED
-   ```
-   - Use `--insecure` flag for self-signed certificates
-   - Or install the proper CA certificate and use `--verify-tls`
-
-4. **Import Errors**
-   ```
-   ModuleNotFoundError: No module named 'fastmcp'
-   ```
-   - Run `uv sync --locked` from the repository root
-   - Retry with `uv run --locked python cs_mcp.py --help`
-
-## Support
-
-For issues and questions:
-- Check the troubleshooting section above
-- Review [Cobalt Strike documentation](https://hstechdocs.helpsystems.com/manuals/cobaltstrike/current/userguide/content/topics/welcome_starting-rest-server.htm) for API requirements
-- Consult [FastMCP documentation](https://gofastmcp.com/getting-started/welcome) for MCP-specific issues
-
----
-
-> [!WARNING]
-> This tool provides direct access to Cobalt Strike capabilities, which include powerful adversary simulation capabilities. Use responsibly and only in environments where you have explicit permission to perform security testing.
+Once the marketplace is installed, make sure to enable the `c2-cobaltstrike` plugin.
