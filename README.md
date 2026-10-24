@@ -49,8 +49,8 @@ cp config.example.yml config.yml
 | `limits.session_idle_timeout_seconds` | `CS_MCP_SESSION_IDLE_TIMEOUT_SECONDS` | `1800` |
 | `limits.request_timeout_seconds` | `CS_MCP_REQUEST_TIMEOUT_SECONDS` | `30` |
 | `limits.max_response_chars` | `CS_MCP_MAX_RESPONSE_CHARS` | `40000` |
-| `limits.max_upload_bytes` | `CS_MCP_MAX_UPLOAD_BYTES` | `4000000`, hard maximum `10000000` |
-| `limits.output_wait_seconds` | `CS_MCP_OUTPUT_WAIT_SECONDS` | `30`, from `0` (never wait) to `50` |
+| `limits.max_upload_bytes` | `CS_MCP_MAX_UPLOAD_BYTES` | `4000000` |
+| `limits.output_wait_seconds` | `CS_MCP_OUTPUT_WAIT_SECONDS` | `30` |
 | `commands.default` | `CS_MCP_COMMANDS_DEFAULT` | `ask` |
 | `commands.allow` | `CS_MCP_COMMANDS_ALLOW` | [] |
 | `commands.ask` | `CS_MCP_COMMANDS_ASK` | [] |
