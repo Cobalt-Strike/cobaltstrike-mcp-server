@@ -1,4 +1,4 @@
-"""Stateful Streamable HTTP MCP server with eleven Cobalt Strike tools."""
+"""Stateful Streamable HTTP MCP server with twelve Cobalt Strike tools."""
 
 from __future__ import annotations
 
@@ -145,12 +145,35 @@ from cs_server_mcp.tool_schema import (
     Offset,
     ScreenshotListLimit,
     ScreenshotSearch,
+    TeamServerSection,
     closed_tool,
 )
 
 _OUTPUT_DEFAULT_LIMIT = 2_000
 _OUTPUT_MAX_LIMIT = 10_000
 _OUTPUT_READ_DEADLINE_SECONDS = 60.0
+_TEAM_SERVER_SETTINGS: Mapping[str, str] = {
+    "teamserver_ip": "get_teamserver_ip",
+    "kill_date": "get_kill_date",
+    "c2_profile": "get_c2_profile",
+    "system_information": "get_system_information",
+}
+_TEAM_SERVER_BLOCKS = frozenset({"c2_profile", "system_information"})
+
+
+def _team_server_text(values: Mapping[str, str]) -> str:
+    lines = [
+        agent_text.TEAM_SERVER_LINE.format(name=name, value=value)
+        for name, value in values.items()
+        if value and name not in _TEAM_SERVER_BLOCKS
+    ]
+    parts = ["\n".join(lines)] if lines else []
+    parts.extend(
+        agent_text.TEAM_SERVER_BLOCK.format(name=name, value=value)
+        for name, value in values.items()
+        if value and name in _TEAM_SERVER_BLOCKS
+    )
+    return "\n\n".join(parts)
 
 
 async def _execute_command_for_model(
@@ -1089,6 +1112,25 @@ def create_server(
         )
         origin = ("beacon_id", "created_at")
         return cast(ScreenshotTransfer, {**staged, **{key: screenshot[key] for key in origin}})
+
+    @tool(
+        title=agent_text.GET_TEAM_SERVER_TITLE,
+        description=agent_text.GET_TEAM_SERVER,
+        annotations=READ_TOOL_ANNOTATIONS,
+        meta=READ_CONTENT_TOOL_META,
+        structured_output=False,
+    )
+    async def cs_get_team_server(
+        section: Annotated[
+            TeamServerSection | None,
+            Field(description=agent_text.GET_TEAM_SERVER_SECTION),
+        ] = None,
+    ) -> str:
+        if section is not None:
+            return await call_cs(_TEAM_SERVER_SETTINGS[section])
+        return _team_server_text(
+            {name: await call_cs(method) for name, method in _TEAM_SERVER_SETTINGS.items()}
+        )
 
     server = MCPServer(
         "Cobalt Strike MCP",
