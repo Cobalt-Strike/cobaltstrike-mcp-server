@@ -379,24 +379,35 @@ class CobaltStrikeClient:
         )
 
     async def get_teamserver_ip(self) -> str:
-        response = await self._call(self.config.get_teamserver_ip_without_preload_content)
-        # Live servers label an unquoted IP as application/json; accept either form.
-        try:
-            body = await response.read()
-            try:
-                value = json.loads(body)
-            except (ValueError, UnicodeError):
-                value = body.decode("utf-8", errors="replace")
-        finally:
-            response.release()
-        if not isinstance(value, str):
-            raise CobaltStrikeResponseError(agent_text.INVALID_TEAMSERVER_IP)
-        value = value.strip()
+        value = await self._config_text(self.config.get_teamserver_ip_without_preload_content)
         try:
             ip_address(value)
         except ValueError:
             raise CobaltStrikeResponseError(agent_text.INVALID_TEAMSERVER_IP) from None
         return value
+
+    async def get_kill_date(self) -> str:
+        return await self._config_text(self.config.get_kill_date_without_preload_content)
+
+    async def get_c2_profile(self) -> str:
+        return await self._config_text(self.config.get_c2_profile_without_preload_content)
+
+    async def get_system_information(self) -> str:
+        return await self._config_text(self.config.get_system_information_without_preload_content)
+
+    async def _config_text(self, operation: SdkOperation) -> str:
+        response = await self._call(operation)
+        try:
+            body = await response.read()
+        finally:
+            response.release()
+        try:
+            value = json.loads(body)
+        except (ValueError, UnicodeError):
+            value = None
+        if not isinstance(value, str):
+            value = body.decode("utf-8", errors="replace")
+        return value.strip()
 
     async def _open_file(
         self, operation: SdkOperation, content_id: str, default_media_type: str

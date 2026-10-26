@@ -17,6 +17,7 @@ Version 0.2 of the official Cobalt Strike MCP
 | cs_fetch_download | Get a one-time link to fetch a download's file |
 | cs_list_screenshots | List screenshots taken on beacons |
 | cs_fetch_screenshot | Get a one-time link to fetch a screenshot's image |
+| cs_get_team_server | Get team server information |
 
 ## Requirements
 

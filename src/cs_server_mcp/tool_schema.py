@@ -67,6 +67,7 @@ ExecutionOrderField = Literal[
     "id", "-id", "submitted_at", "-submitted_at", "updated_at", "-updated_at"
 ]
 ExecutionStatus = Literal["in_progress", "output_received", "completed", "failed", "canceled"]
+TeamServerSection = Literal["teamserver_ip", "kill_date", "c2_profile", "system_information"]
 
 
 def _search_regex(
