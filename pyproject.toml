@@ -1,16 +1,68 @@
 [project]
 name = "cobaltstrike-mcp-server"
-version = "0.1.0"
-description = "MCP server exposing Cobalt Strike REST API and WebSocket stream tools."
+version = "0.2.0"
+description = "MCP server exposing Cobalt Strike REST API."
 readme = "README.md"
-requires-python = ">=3.10"
-license = { file = "LICENSE" }
+requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
-    "fastmcp==3.4.3",
-    "httpx==0.28.1",
-    "typing-extensions==4.15.0",
-    "websocket-client==1.9.0",
+    "aiohttp>=3.14.5",
+    "anyio>=4.13.0",
+    "cs-sdk-python @ git+https://github.com/outflanknl/cs-sdk-python.git@19b755bca18db6a157955fd4fd7d17a3243ef2b4",
+    "mcp==2.2.0",
+    "mcp-types==2.2.0",
+    "pydantic>=2.12.0",
+    "pydantic-core>=2.46.4",
+    "pydantic-settings>=2.14.0",
+    "pyyaml>=6.0.2",
+    "sse-starlette>=3.5.0,<4",
+    "starlette>=1.3.1",
+    "uvicorn[standard]>=0.40.0",
+    "regex>=2024.11.6",
 ]
 
-[tool.uv]
-package = false
+[project.urls]
+Repository = "https://github.com/Cobalt-Strike/cobaltstrike-mcp-server"
+Issues = "https://github.com/Cobalt-Strike/cobaltstrike-mcp-server/issues"
+Releases = "https://github.com/Cobalt-Strike/cobaltstrike-mcp-server/releases"
+
+[project.scripts]
+cobaltstrike-mcp-server = "cs_server_mcp.__main__:main"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cs_server_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/cs_server_mcp/**/*.py",
+    "/tests/**/*.py",
+    "/.gitignore",
+    "/LICENSE",
+    "/README.md",
+    "/config.example.yml",
+    "/pyproject.toml",
+    "/uv.lock",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[dependency-groups]
+dev = ["httpx>=0.28.1,<1", "pytest>=8.4.0", "pytest-asyncio>=1.4.0", "ruff>=0.11.9"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = ["E501"]
