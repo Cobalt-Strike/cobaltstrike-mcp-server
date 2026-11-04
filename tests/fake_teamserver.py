@@ -22,6 +22,8 @@ from tests.virtual_time import VirtualClock
 
 GLOBAL_CATALOG = "0"
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+C2_PROFILE = 'set sleeptime "60000";\nhttp-get {\n    set uri "/updates";\n}'
+SYSTEM_INFORMATION = "Cobalt Strike 4.13\nJava 17.0.2"
 
 
 def api_error(status: int, detail: str | None = None) -> ApiException:
@@ -72,6 +74,7 @@ class FakeTeamServer:
         self.job_commands = {"execute-assembly", "powershell", "powerpick", "keylogger"}
         self.submissions: list[dict[str, Any]] = []
         self.logins = 0
+        self.kill_date = "2026-12-31"
         self._answers: list[_Answer] = []
         self._failures: dict[str, BaseException] = {}
         self._task_counter = 0
@@ -317,6 +320,15 @@ class FakeTeamServer:
 
     async def get_teamserver_ip(self) -> str:
         return "10.0.0.1"
+
+    async def get_kill_date(self) -> str:
+        return self.kill_date
+
+    async def get_c2_profile(self) -> str:
+        return C2_PROFILE
+
+    async def get_system_information(self) -> str:
+        return SYSTEM_INFORMATION
 
     async def list_beacons(self) -> list[dict[str, Any]]:
         self._check("list_beacons")

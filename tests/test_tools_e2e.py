@@ -18,7 +18,7 @@ from cs_server_mcp.output_contracts import (
     ScreenshotTransfer,
 )
 from cs_server_mcp.server import TRANSFER_LINK_TTL_SECONDS
-from tests.fake_teamserver import PNG_BYTES, FakeTeamServer
+from tests.fake_teamserver import C2_PROFILE, PNG_BYTES, SYSTEM_INFORMATION, FakeTeamServer
 from tests.harness import connect, contract, error_payload, make_settings, plain_text
 from tests.virtual_time import VirtualClock
 
@@ -525,3 +525,20 @@ async def test_fetch_download_link_expires_and_the_staged_file_is_removed(
 
     assert fetched.status_code == 404
     assert not staged_path.exists(), "an expired file is removed from the staging directory"
+
+
+async def test_get_team_server_reads_every_setting_or_one_and_omits_an_empty_one(
+    teamserver: FakeTeamServer,
+) -> None:
+    async with connect(make_settings(), teamserver) as mcp:
+        everything = await mcp.call("cs_get_team_server")
+        profile = await mcp.call("cs_get_team_server", section="c2_profile")
+        teamserver.kill_date = ""
+        without_kill_date = await mcp.call("cs_get_team_server")
+
+    assert plain_text(everything) == (
+        "teamserver_ip: 10.0.0.1\nkill_date: 2026-12-31\n\n"
+        f"[c2_profile]\n{C2_PROFILE}\n\n[system_information]\n{SYSTEM_INFORMATION}"
+    )
+    assert plain_text(profile) == C2_PROFILE
+    assert plain_text(without_kill_date).startswith("teamserver_ip: 10.0.0.1\n\n[c2_profile]\n")

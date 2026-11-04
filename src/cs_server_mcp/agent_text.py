@@ -57,6 +57,8 @@ LIST_SCREENSHOTS_TITLE = "List screenshots"
 
 FETCH_SCREENSHOT_TITLE = "Fetch screenshot"
 
+GET_TEAM_SERVER_TITLE = "Get team server"
+
 
 # ---- Tool descriptions -------------------------------------------------------------------------
 
@@ -244,6 +246,19 @@ server after the first fetch or on expiry. Use cs_list_screenshots for
 metadata alone.
 """
 
+GET_TEAM_SERVER = """\
+Get team server settings from Cobalt Strike as plain text: the team server
+IP address, the Beacon kill date, the Malleable C2 profile, and system
+information.
+
+Use it to answer questions about the team server or to review the C2
+profile; it reads configuration and tasks no beacon. Without section, the
+text starts with one teamserver_ip and one kill_date line (name: value),
+then the profile under a [c2_profile] heading and Cobalt Strike's support
+dump (version, runtime, environment, loaded scripts) under a
+[system_information] heading.
+"""
+
 
 # ---- Argument descriptions ---------------------------------------------------------------------
 
@@ -375,6 +390,11 @@ LIST_SCREENSHOTS_BEACON_ID = (
 )
 
 FETCH_SCREENSHOT_SCREENSHOT_ID = "ID of the screenshot, from cs_list_screenshots."
+
+GET_TEAM_SERVER_SECTION = (
+    "One setting to return verbatim: teamserver_ip, kill_date, c2_profile, or "
+    "system_information. Omit for all four in one text."
+)
 
 
 # ---- Shared argument descriptions --------------------------------------------------------------
@@ -889,6 +909,10 @@ OUTPUT_PS_HEADER = "PID\tPPID\tName\tArch\tSession\tUser"
 OUTPUT_LS_HEADER = "Type\tSize\tModified\tName"
 
 OUTPUT_STRUCTURED = "[structured {type}] {json}"
+
+TEAM_SERVER_LINE = "{name}: {value}"
+
+TEAM_SERVER_BLOCK = "[{name}]\n{value}"
 
 OUTPUT_EXECUTION_STATUS = "[Task status: {status}]"
 

@@ -1,4 +1,4 @@
-"""The published contract: the eleven tools, their annotations, the client text budgets, and
+"""The published contract: the twelve tools, their annotations, the client text budgets, and
 the lifespan. ``.agents/skills/mcp-harness/SKILL.md`` explains the budgets and rules."""
 
 from __future__ import annotations
@@ -54,6 +54,7 @@ TOOL_CONTRACTS = {
     "cs_fetch_screenshot": ToolContract(
         ["screenshot_id"], False, False, False, "stage_transfer", "content"
     ),
+    "cs_get_team_server": READ._replace(sensitivity="content"),
 }
 
 
@@ -68,7 +69,7 @@ async def advertised_tool(teamserver: FakeTeamServer, name: str) -> Tool:
     return next(tool for tool in tools if tool.name == name)
 
 
-async def test_the_server_advertises_exactly_the_eleven_tools(teamserver: FakeTeamServer) -> None:
+async def test_the_server_advertises_exactly_the_twelve_tools(teamserver: FakeTeamServer) -> None:
     tools = await create_server(make_settings(), client=teamserver).list_tools()
 
     assert sorted(tool.name for tool in tools) == sorted(TOOL_CONTRACTS)
