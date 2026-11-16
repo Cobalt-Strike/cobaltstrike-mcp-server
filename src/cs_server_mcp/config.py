@@ -85,6 +85,7 @@ LIST_LIMITS: Mapping[str, ListLimits] = {
     "commands": ListLimits(default=50, maximum=100),
     "command_executions": ListLimits(default=10, maximum=50),
     "artifacts": ListLimits(default=10, maximum=50),
+    "credentials": ListLimits(default=10, maximum=50),
     "downloads": ListLimits(default=10, maximum=50),
     "screenshots": ListLimits(default=10, maximum=50),
 }

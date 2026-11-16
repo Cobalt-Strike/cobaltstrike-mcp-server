@@ -21,6 +21,8 @@ pytestmark = pytest.mark.wall_clock
 
 LOGIN = ("POST", "/api/auth/login")
 BEACONS = ("GET", "/api/v1/beacons")
+CREDENTIALS = ("GET", "/api/v1/data/credentials")
+ADD_CREDENTIAL = ("POST", "/api/v1/data/credentials")
 PASSWORD = "hunter2"
 
 
@@ -115,6 +117,76 @@ async def test_list_beacons_logs_in_first_and_sends_the_token_as_a_bearer(
         "duration_ms": 86_400_000,
     }
     assert (beacons.method, beacons.path, beacons.authorization) == (*BEACONS, "Bearer tok-1")
+
+
+@pytest.mark.parametrize("credential_id", [None, "credential-1"])
+async def test_credential_reads_keep_read_only_fields_and_exact_values(
+    http_teamserver: HttpTeamServer, credential_id: str | None
+) -> None:
+    record = {
+        "id": "credential-1",
+        "user": "alice",
+        "secret": "  test secret\n",
+        "created": "2026-11-16T12:00:00Z",
+        "realm": "EXAMPLE",
+        "secret_type": "plaintext",
+        "host": "WS01",
+        "source": "operator",
+        "note": "test account",
+    }
+    route = CREDENTIALS if credential_id is None else ("GET", f"{CREDENTIALS[1]}/{credential_id}")
+    http_teamserver.logs_in_with("tok-1")
+    http_teamserver.reply(route, json_body=[record] if credential_id is None else record)
+
+    async with CobaltStrikeClient(settings_for(http_teamserver), password=PASSWORD) as client:
+        result = (
+            await client.list_credentials()
+            if credential_id is None
+            else await client.get_credential(credential_id)
+        )
+
+    assert result == ([record] if credential_id is None else record)
+    assert http_teamserver.received_for(route)[0].authorization == "Bearer tok-1"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {},
+        {
+            "realm": "EXAMPLE",
+            "secret_type": "plaintext",
+            "host": "WS01",
+            "source": "operator",
+            "note": "test",
+        },
+    ],
+)
+async def test_add_credential_sends_the_sdk_wire_fields_and_accepts_an_empty_response(
+    http_teamserver: HttpTeamServer, metadata: dict[str, str]
+) -> None:
+    http_teamserver.logs_in_with("tok-1")
+    http_teamserver.reply(ADD_CREDENTIAL)
+
+    async with CobaltStrikeClient(settings_for(http_teamserver), password=PASSWORD) as client:
+        result = await client.add_credential(username="alice", secret="  test secret\n", **metadata)
+
+    assert result is None
+    [request] = http_teamserver.received_for(ADD_CREDENTIAL)
+    assert request.authorization == "Bearer tok-1"
+    assert request.body == {"user": "alice", "secret": "  test secret\n", **metadata}
+
+
+async def test_failed_credential_post_is_not_retried(http_teamserver: HttpTeamServer) -> None:
+    http_teamserver.logs_in_with("tok-1")
+    http_teamserver.reply(ADD_CREDENTIAL, status=500)
+
+    async with CobaltStrikeClient(settings_for(http_teamserver), password=PASSWORD) as client:
+        with pytest.raises(ApiException) as raised:
+            await client.add_credential(username="alice", secret="test")
+
+    assert raised.value.status == 500
+    assert len(http_teamserver.received_for(ADD_CREDENTIAL)) == 1
 
 
 async def test_request_rejected_with_401_logs_in_again_and_retries_once(

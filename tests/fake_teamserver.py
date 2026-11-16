@@ -66,6 +66,8 @@ class FakeTeamServer:
         self.catalog: list[dict[str, Any]] = []
         self.tasks: dict[str, dict[str, Any]] = {}
         self.artifacts: list[dict[str, Any]] = []
+        self.credentials: dict[str, dict[str, Any]] = {}
+        self.credential_writes: list[dict[str, Any]] = []
         self.downloads: list[dict[str, Any]] = []
         self.active_downloads: dict[str, list[dict[str, Any]]] = {}
         self.screenshots: list[dict[str, Any]] = []
@@ -242,6 +244,24 @@ class FakeTeamServer:
         self.artifacts.append(row)
         return row
 
+    def add_stored_credential(
+        self,
+        credential_id: str,
+        *,
+        username: str = "alice",
+        secret: str = "test secret",
+        **fields: Any,
+    ) -> dict[str, Any]:
+        row = {
+            "id": credential_id,
+            "user": username,
+            "secret": secret,
+            "created": self.clock.now().isoformat(),
+            **fields,
+        }
+        self.credentials[credential_id] = row
+        return row
+
     def beacon_answers(self, task_id: str, *, at: datetime | None = None, output: str) -> None:
         """Once ``at`` passes on the clock the task completes and the beacon checks in."""
         self._answers.append(_Answer(task_id, self.clock.now() if at is None else at, output))
@@ -411,6 +431,43 @@ class FakeTeamServer:
     async def list_artifacts(self) -> list[dict[str, Any]]:
         self._check("list_artifacts")
         return [copy.deepcopy(row) for row in self.artifacts]
+
+    async def list_credentials(self) -> list[dict[str, Any]]:
+        self._check("list_credentials")
+        return [copy.deepcopy(row) for row in self.credentials.values()]
+
+    async def get_credential(self, credential_id: str) -> dict[str, Any]:
+        self._check("get_credential")
+        if credential_id not in self.credentials:
+            raise api_error(404)
+        return copy.deepcopy(self.credentials[credential_id])
+
+    async def add_credential(
+        self,
+        *,
+        username: str,
+        secret: str,
+        realm: str | None = None,
+        secret_type: str | None = None,
+        host: str | None = None,
+        source: str | None = None,
+        note: str | None = None,
+    ) -> None:
+        fields = {
+            "username": username,
+            "secret": secret,
+            "realm": realm,
+            "secret_type": secret_type,
+            "host": host,
+            "source": source,
+            "note": note,
+        }
+        self.credential_writes.append(fields)
+        self._check("add_credential")
+        credential_id = 1
+        while str(credential_id) in self.credentials:
+            credential_id += 1
+        self.add_stored_credential(str(credential_id), **fields)
 
     async def list_downloads(self) -> list[dict[str, Any]]:
         self._check("list_downloads")
