@@ -13,6 +13,8 @@ Version 0.2 of the official Cobalt Strike MCP
 | cs_read_command_output | Read the output of one command execution as plain text |
 | cs_list_artifacts | List artifacts stored on the team server for beacons to use |
 | cs_upload_artifact | Get a one-time link that stores a file as a new artifact |
+| cs_list_credentials | List stored credentials, or get one credential by ID |
+| cs_add_credential | Add one credential to the team server's store |
 | cs_list_downloads | List files downloaded from beacons, with transfers in progress |
 | cs_fetch_download | Get a one-time link to fetch a download's file |
 | cs_list_screenshots | List screenshots taken on beacons |

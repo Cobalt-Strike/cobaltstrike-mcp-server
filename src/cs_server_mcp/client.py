@@ -28,7 +28,7 @@ from cs_sdk_python.api_client.api import (
     ServerConfigApi,
 )
 from cs_sdk_python.api_client.exceptions import ApiException
-from cs_sdk_python.api_client.models import CommandDto, LoginRequest
+from cs_sdk_python.api_client.models import CommandDto, CredentialDto, LoginRequest
 from cs_sdk_python.api_client.rest import RESTResponse
 from pydantic import BaseModel, ValidationError
 
@@ -354,6 +354,40 @@ class CobaltStrikeClient:
 
     async def list_artifacts(self) -> list[dict[str, Any]]:
         return await self._get(self.artifacts.list_artifacts, list)
+
+    async def list_credentials(self) -> list[dict[str, Any]]:
+        # Raw JSON: CredentialDto.to_dict drops the read-only id and created fields.
+        return await self._raw_json(self.creds.list_credentials_without_preload_content, list)
+
+    async def get_credential(self, credential_id: str) -> dict[str, Any]:
+        return await self._raw_json(
+            self.creds.get_credential_without_preload_content, id=_segment(credential_id)
+        )
+
+    async def add_credential(
+        self,
+        *,
+        username: str,
+        secret: str,
+        realm: str | None = None,
+        secret_type: str | None = None,
+        host: str | None = None,
+        source: str | None = None,
+        note: str | None = None,
+    ) -> None:
+        # A successful POST has no response body and returns no credential ID.
+        await self._call(
+            self.creds.add_credential,
+            request_model=CredentialDto(
+                user=username,
+                secret=secret,
+                realm=realm,
+                secret_type=secret_type,
+                host=host,
+                source=source,
+                note=note,
+            ),
+        )
 
     async def list_downloads(self) -> list[dict[str, Any]]:
         return await self._get(self.files.list_downloads, list)

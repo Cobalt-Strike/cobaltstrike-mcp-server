@@ -17,7 +17,7 @@ import pydantic_core
 from cs_server_mcp import agent_text
 
 MAX_REPORTED_TRUNCATED_FIELDS = 20
-# Never shortened: navigation, identifiers, and submitted arguments.
+# Never shortened: navigation, identifiers, credential values, and submitted arguments.
 PROTECTED_KEYS = frozenset(
     {
         "next_offset",
@@ -25,6 +25,12 @@ PROTECTED_KEYS = frozenset(
         "command_arguments",
         "submitted_arguments",
         "artifact_reference",
+        "credential_id",
+        "username",
+        "realm",
+        "secret",
+        "secret_type",
+        "host",
         "url",
         "command_execution_id",
         "beacon_id",

@@ -17,7 +17,7 @@ from collections.abc import Mapping
 SERVER_INSTRUCTIONS = (
     "Tools for Cobalt Strike, a red-team command-and-control framework. Use them whenever "
     "the user asks about beacons, running console commands, task results or output, "
-    "downloads, screenshots, or artifacts. Every tool is named cs_*.\n"
+    "downloads, screenshots, artifacts, or credentials. Every tool is named cs_*.\n"
     "\n"
     "Concepts: a beacon is an agent on a remote system, named by beacon_id. A command "
     "execution is one console task, named by command_execution_id; command_name names a "
@@ -48,6 +48,10 @@ READ_COMMAND_OUTPUT_TITLE = "Read command output"
 LIST_ARTIFACTS_TITLE = "List artifacts"
 
 UPLOAD_ARTIFACT_TITLE = "Upload artifact"
+
+LIST_CREDENTIALS_TITLE = "List credentials"
+
+ADD_CREDENTIAL_TITLE = "Add credential"
 
 LIST_DOWNLOADS_TITLE = "List downloads"
 
@@ -186,6 +190,31 @@ MCP call only creates the link. With --fail-with-body, curl exits nonzero on
 HTTP errors and preserves the JSON error body.
 """
 
+LIST_CREDENTIALS = """\
+List credentials in the team server's store, or get one when credential_id
+is given.
+
+Each record carries credential_id, username, realm, secret (the exact stored
+value), secret_type, host, source, note, and created_at. Optional fields are
+null when absent. Results are sorted by credential_id and paged with limit
+and offset; search_regex matches username, realm, secret_type, host, source,
+and note. Continue with next_offset and the same filters. A single-ID lookup
+ignores search and paging. Add a credential with cs_add_credential.
+"""
+
+ADD_CREDENTIAL = """\
+Add one credential to the team server's credential store.
+
+Supply username and the exact secret, with realm, secret_type, host, source,
+and note when known. Values are stored as supplied. This changes the store
+and runs no beacon command. A successful result has store_outcome=accepted:
+Cobalt Strike accepted the write but returned no record or ID. Follow
+next_step to inspect it with cs_list_credentials. A failed write reports
+store_outcome=not_submitted (input rejected locally), rejected (Cobalt Strike
+refused it), or uncertain (the write may have reached the store). After an
+uncertain result, list credentials before adding again to avoid duplicates.
+"""
+
 LIST_DOWNLOADS = """\
 List files downloaded from beacons, with transfers still in progress, or get
 one completed download when download_id is given.
@@ -286,6 +315,31 @@ COMMAND_SEARCH_CONFLICT = (
 LIST_COMMANDS_INCLUDE_HELP = (
     "Whether each result carries help. Default: false for a listing, true for an exact "
     "command_name lookup. Pass true to include help while listing, or false to leave it out."
+)
+
+LIST_CREDENTIALS_CREDENTIAL_ID = "Credential ID for a single lookup. Omit to list credentials."
+
+ADD_CREDENTIAL_USERNAME = "Account name to store as the credential's user."
+
+ADD_CREDENTIAL_SECRET = "Exact credential value to store, including any meaningful whitespace."
+
+ADD_CREDENTIAL_REALM = "Account domain or realm, when known. Omit when unknown."
+
+ADD_CREDENTIAL_SECRET_TYPE = "Secret type recorded by Cobalt Strike, when known. Omit when unknown."
+
+ADD_CREDENTIAL_HOST = "Host associated with the credential, when known. Omit when unknown."
+
+ADD_CREDENTIAL_SOURCE = "Where the credential came from, when known. Omit when unknown."
+
+ADD_CREDENTIAL_NOTE = "Optional note to store with the credential."
+
+CREDENTIAL_ACCEPTED_NEXT_STEP = (
+    "Call cs_list_credentials to inspect the stored credential and its ID."
+)
+
+CREDENTIAL_UNCERTAIN_NEXT_STEP = (
+    "Call cs_list_credentials to check whether the credential was stored before adding it again; "
+    "the write may already have succeeded."
 )
 
 EXECUTE_COMMAND_BEACON_ID = "ID of the beacon that runs the command, from cs_list_beacons."
@@ -428,6 +482,15 @@ EXECUTION_SEARCH_FIELDS: Mapping[str, str] = {
 
 ARTIFACT_SEARCH_FIELDS: Mapping[str, str] = {
     "artifact_reference": "reference",
+}
+
+CREDENTIAL_SEARCH_FIELDS: Mapping[str, str] = {
+    "username": "username",
+    "realm": "realm",
+    "secret_type": "secret type",
+    "host": "host",
+    "source": "source",
+    "note": "note",
 }
 
 DOWNLOAD_SEARCH_FIELDS: Mapping[str, str] = {

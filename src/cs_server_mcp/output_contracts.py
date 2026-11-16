@@ -225,6 +225,39 @@ class Beacons(RootModel[BeaconRecord | BeaconListPage]):
     model_config = ConfigDict(json_schema_extra={"type": "object"})
 
 
+class CredentialRecord(Contract):
+    """One stored credential, including its exact secret value."""
+
+    credential_id: str
+    username: str
+    realm: str | None
+    secret: str
+    secret_type: str | None
+    host: str | None
+    source: str | None
+    note: str | None
+    created_at: str | None = Field(description=agent_text.TIMESTAMP_DESCRIPTION)
+
+
+class CredentialListPage(ListPage):
+    """A page of stored credentials."""
+
+    results: list[CredentialRecord]
+
+
+class Credentials(RootModel[CredentialRecord | CredentialListPage]):
+    """One credential with credential_id, otherwise a page."""
+
+    model_config = ConfigDict(json_schema_extra={"type": "object"})
+
+
+class CredentialReceipt(Contract):
+    """The team server accepted a credential write; it returned no record ID."""
+
+    store_outcome: Literal["accepted"]
+    next_step: str
+
+
 class ArtifactRecord(Contract):
     """One team-server artifact: the reference a command argument uses.
 

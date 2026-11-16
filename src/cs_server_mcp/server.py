@@ -1,4 +1,4 @@
-"""Stateful Streamable HTTP MCP server with twelve Cobalt Strike tools."""
+"""Stateful Streamable HTTP MCP server with fourteen Cobalt Strike tools."""
 
 from __future__ import annotations
 
@@ -94,6 +94,8 @@ from cs_server_mcp.output_contracts import (
     ArtifactUploadLink,
     Beacons,
     CommandCatalog,
+    CredentialReceipt,
+    Credentials,
     Downloads,
     DownloadTransfer,
     ExecutionHistory,
@@ -104,6 +106,7 @@ from cs_server_mcp.output_contracts import (
 from cs_server_mcp.resource_views import (
     ARTIFACT_REFERENCE_PREFIX,
     identifier,
+    identifier_sort_key,
     isoformat,
     local_page,
     lookup,
@@ -111,6 +114,7 @@ from cs_server_mcp.resource_views import (
     present_artifact_size,
     present_beacon,
     present_beacon_list,
+    present_credential,
     present_download,
     present_screenshot,
     regex_filter,
@@ -126,6 +130,7 @@ from cs_server_mcp.serialization import (
 from cs_server_mcp.tool_errors import (
     UPSTREAM_ERRORS,
     InvalidArgument,
+    OperationFailure,
     http_status_code,
     reports_expected_errors,
     upstream_error_result,
@@ -136,6 +141,8 @@ from cs_server_mcp.tool_schema import (
     BeaconListLimit,
     CommandListLimit,
     CommandSearch,
+    CredentialListLimit,
+    CredentialSearch,
     DownloadListLimit,
     DownloadSearch,
     ExecutionListLimit,
@@ -955,6 +962,73 @@ def create_server(
         return cast(
             ArtifactUploadLink,
             {**one_time_link(ctx, slot), "max_bytes": resolved_settings.max_upload_bytes},
+        )
+
+    @tool(
+        title=agent_text.LIST_CREDENTIALS_TITLE,
+        description=agent_text.LIST_CREDENTIALS,
+        annotations=READ_TOOL_ANNOTATIONS,
+        meta=READ_CONTENT_TOOL_META,
+    )
+    async def cs_list_credentials(
+        credential_id: Annotated[
+            str | None, Field(description=agent_text.LIST_CREDENTIALS_CREDENTIAL_ID)
+        ] = None,
+        search_regex: CredentialSearch = None,
+        limit: CredentialListLimit = None,
+        offset: Offset = None,
+    ) -> Credentials:
+        if credential_id is not None:
+            return cast(
+                Credentials, present_credential(await call_cs("get_credential", credential_id))
+            )
+        rows = [present_credential(row) for row in await call_cs("list_credentials")]
+        rows = regex_filter(rows, search_regex, agent_text.CREDENTIAL_SEARCH_FIELDS)
+        rows.sort(key=lambda row: identifier_sort_key(row["credential_id"]))
+        return cast(Credentials, page(rows, "credentials", limit, offset))
+
+    @tool(
+        title=agent_text.ADD_CREDENTIAL_TITLE,
+        description=agent_text.ADD_CREDENTIAL,
+        annotations=TRANSFER_TOOL_ANNOTATIONS,
+        meta=UPLOAD_TOOL_META,
+        error_fields={"store_outcome": "not_submitted"},
+    )
+    async def cs_add_credential(
+        username: Annotated[
+            str, Field(min_length=1, description=agent_text.ADD_CREDENTIAL_USERNAME)
+        ],
+        secret: Annotated[str, Field(min_length=1, description=agent_text.ADD_CREDENTIAL_SECRET)],
+        realm: Annotated[str | None, Field(description=agent_text.ADD_CREDENTIAL_REALM)] = None,
+        secret_type: Annotated[
+            str | None, Field(description=agent_text.ADD_CREDENTIAL_SECRET_TYPE)
+        ] = None,
+        host: Annotated[str | None, Field(description=agent_text.ADD_CREDENTIAL_HOST)] = None,
+        source: Annotated[str | None, Field(description=agent_text.ADD_CREDENTIAL_SOURCE)] = None,
+        note: Annotated[str | None, Field(description=agent_text.ADD_CREDENTIAL_NOTE)] = None,
+    ) -> CredentialReceipt:
+        try:
+            await call_cs(
+                "add_credential",
+                username=username,
+                secret=secret,
+                realm=realm,
+                secret_type=secret_type,
+                host=host,
+                source=source,
+                note=note,
+            )
+        except UPSTREAM_ERRORS as exc:
+            status = http_status_code(exc)
+            rejected = status is not None and 400 <= status < 500
+            raise OperationFailure(
+                exc,
+                leading={"store_outcome": "rejected" if rejected else "uncertain"},
+                next_step=None if rejected else agent_text.CREDENTIAL_UNCERTAIN_NEXT_STEP,
+            ) from exc
+        return cast(
+            CredentialReceipt,
+            {"store_outcome": "accepted", "next_step": agent_text.CREDENTIAL_ACCEPTED_NEXT_STEP},
         )
 
     async def completed_downloads(beacons: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

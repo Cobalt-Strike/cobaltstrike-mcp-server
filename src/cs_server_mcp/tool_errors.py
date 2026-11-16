@@ -39,6 +39,7 @@ UPSTREAM_ERRORS: tuple[type[BaseException], ...] = (
 _IDENTIFIER_LIST_TOOLS = {
     "command_execution_id": "cs_list_command_executions",
     "artifact_reference": "cs_list_artifacts",
+    "credential_id": "cs_list_credentials",
     "download_id": "cs_list_downloads",
     "screenshot_id": "cs_list_screenshots",
     "beacon_id": "cs_list_beacons",

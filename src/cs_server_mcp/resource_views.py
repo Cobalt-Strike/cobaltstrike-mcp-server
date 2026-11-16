@@ -1,4 +1,4 @@
-"""Present beacons, artifacts, downloads, and screenshots as the tools publish them.
+"""Present beacons, artifacts, credentials, downloads, and screenshots for the tools.
 
 Every record leads with its identifier under the name the tools take it by. Cobalt Strike
 lists these records whole, with no server-side filter or paging, so the local regex
@@ -60,6 +60,18 @@ _BEACON_ROW_FIELDS = (
     "last_checkin_age",
     "note",
 )
+
+
+def present_credential(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "credential_id": identifier(row, "id"),
+        "username": row.get("user"),
+        **{
+            key: row.get(key)
+            for key in ("realm", "secret", "secret_type", "host", "source", "note")
+        },
+        "created_at": isoformat(row.get("created")),
+    }
 
 
 def present_beacon(row: Mapping[str, Any]) -> dict[str, Any]:

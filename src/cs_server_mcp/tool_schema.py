@@ -60,6 +60,7 @@ BeaconListLimit = _list_limit("beacons")
 CommandListLimit = _list_limit("commands")
 ExecutionListLimit = _list_limit("command_executions")
 ArtifactListLimit = _list_limit("artifacts")
+CredentialListLimit = _list_limit("credentials")
 DownloadListLimit = _list_limit("downloads")
 ScreenshotListLimit = _list_limit("screenshots")
 
@@ -91,6 +92,7 @@ CommandSearch = _search_regex(
 ExecutionSearch = _search_regex(agent_text.EXECUTION_SEARCH_FIELDS)
 # Artifacts have no single-ID lookup, so the search applies to every call.
 ArtifactSearch = _search_regex(agent_text.ARTIFACT_SEARCH_FIELDS, suffix="")
+CredentialSearch = _search_regex(agent_text.CREDENTIAL_SEARCH_FIELDS)
 DownloadSearch = _search_regex(agent_text.DOWNLOAD_SEARCH_FIELDS)
 ScreenshotSearch = _search_regex(agent_text.SCREENSHOT_SEARCH_FIELDS)
 
